@@ -213,7 +213,53 @@ func creatorPageStatus(page *rod.Page) (CreatorLoginStatus, error) {
 	if ready != nil {
 		return CreatorLoginStatus{IsLoggedIn: true, Status: "logged_in"}, nil
 	}
+	dashboard, err := creatorDashboardReady(page, u.Path)
+	if err != nil {
+		return unknown, err
+	}
+	if dashboard {
+		return CreatorLoginStatus{IsLoggedIn: true, Status: "logged_in"}, nil
+	}
 	return unknown, nil
+}
+
+// 新版工作台用 div 菜单；结合认证后路径、可见账号和菜单，避免仅凭标题或 URL 误判。
+func creatorDashboardReady(page *rod.Page, path string) (bool, error) {
+	switch strings.TrimSuffix(path, "/") {
+	case "/new/home", "/new/note-manager", "/publish/publish":
+	default:
+		return false, nil
+	}
+	account, err := visibleElement(page, ".account-name")
+	if err != nil || account == nil {
+		return false, err
+	}
+	name, err := account.Text()
+	if err != nil || strings.TrimSpace(name) == "" {
+		return false, err
+	}
+	menus, err := page.Elements("div.d-menu-item")
+	if err != nil {
+		return false, err
+	}
+	for _, menu := range menus {
+		visible, err := menu.Visible()
+		if err != nil {
+			return false, err
+		}
+		if !visible {
+			continue
+		}
+		text, err := menu.Text()
+		if err != nil {
+			return false, err
+		}
+		switch strings.TrimSpace(text) {
+		case "首页", "笔记管理":
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // CheckCreatorLoginStatus 只检查页面，不点击协议，不以 cookie 名称判断登录有效。

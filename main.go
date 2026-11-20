@@ -20,7 +20,7 @@ func main() {
 		token    string
 	)
 	flag.BoolVar(&headless, "headless", true, "是否无头模式")
-	flag.StringVar(&port, "port", ":18060", "端口")
+	flag.StringVar(&port, "port", "127.0.0.1:18060", "监听地址")
 	flag.StringVar(&token, "token", "", "鉴权 Token，留空则读取 AUTH_TOKEN")
 	flag.Parse()
 	if token == "" {
