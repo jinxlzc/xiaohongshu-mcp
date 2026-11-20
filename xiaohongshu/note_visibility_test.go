@@ -3,8 +3,9 @@ package xiaohongshu
 import (
 	"context"
 	"errors"
-	"github.com/stretchr/testify/require"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestValidateNoteVisibility(t *testing.T) {
@@ -87,4 +88,19 @@ func TestVisibilityReadFailureAndCancellation(t *testing.T) {
 	_, err = changeNoteVisibility(ctx, "0123456789abcdef01234567", "公开可见", func() (string, error) { t.Fatal("取消后不应读取页面"); return "", nil }, write)
 	require.ErrorIs(t, err, context.Canceled)
 	require.Zero(t, calls)
+}
+
+func TestManagedNoteAttributeID(t *testing.T) {
+	const id = "0123456789abcdef01234567"
+	for _, tc := range []struct{ name, attr, value, want string }{
+		{"埋点", "data-impression", `{"index":{"type":"Index","value":{"channelTabName":"all"}},"noteTarget":{"type":"NoteTarget","value":{"noteId":"` + id + `"}},"event":{"type":"Event","value":{"action":{"type":"NormalizedAction","value":"impression"},"pointId":50977}},"page":{"type":"Page","value":{"pageInstance":{"type":"PageInstance","value":"creator_service_platform"}}}}`, id},
+		{"直接属性", "data-note-id", "0123456789ABCDEF01234567", id},
+		{"无效JSON", "data-impression", `{`, ""},
+		{"空属性", "data-impression", "", ""},
+		{"错误字段", "data-impression", `{"event":{"value":{"noteId":"` + id + `"}}}`, ""},
+		{"错误类型", "data-impression", `{"noteTarget":{"value":{"noteId":123}}}`, ""},
+		{"非法ID", "data-impression", `{"noteTarget":{"value":{"noteId":"not-a-note"}}}`, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) { require.Equal(t, tc.want, managedNoteAttributeID(tc.attr, tc.value)) })
+	}
 }
