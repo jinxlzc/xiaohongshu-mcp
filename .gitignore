@@ -53,3 +53,10 @@ docker/docker-compose.override.yml
 # 本地分析/调试产物，不进仓库
 debug/
 .worktrees/
+
+# 发布失败现场，可能包含稿件内容
+diag/
+
+# 发布安全验证二维码，仅供账号本人扫码
+verify_qr.png
+verify_qr.json

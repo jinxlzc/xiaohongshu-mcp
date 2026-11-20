@@ -57,6 +57,7 @@ type LoginQrcodeResponse struct {
 
 // PublishResponse 发布响应
 type PublishResponse struct {
+	NoteID  string   `json:"note_id,omitempty"`
 	Title   string   `json:"title"`
 	Content string   `json:"content"`
 	Images  int      `json:"images"`
@@ -78,6 +79,7 @@ type PublishVideoRequest struct {
 
 // PublishVideoResponse 发布视频响应
 type PublishVideoResponse struct {
+	NoteID  string `json:"note_id,omitempty"`
 	Title   string `json:"title"`
 	Content string `json:"content"`
 	Video   string `json:"video"`
@@ -206,6 +208,8 @@ func (s *XiaohongshuService) waitScanInBackground(
 
 // PublishContent 发布内容
 func (s *XiaohongshuService) PublishContent(ctx context.Context, req *PublishRequest) (*PublishResponse, error) {
+	ctx, cancel := context.WithTimeout(ctx, xiaohongshu.PublishTimeout)
+	defer cancel()
 	// 验证标题长度（小红书限制：最大20个字）
 	if xhsutil.CalcTitleLength(req.Title) > 20 {
 		return nil, fmt.Errorf("标题长度超过限制")
@@ -253,12 +257,14 @@ func (s *XiaohongshuService) PublishContent(ctx context.Context, req *PublishReq
 		Products:     req.Products,
 	}
 
-	if err := s.publishContent(ctx, content); err != nil {
+	result, err := s.publishContent(ctx, content)
+	if err != nil {
 		logrus.Errorf("发布内容失败: title=%s %v", content.Title, err)
 		return nil, err
 	}
 
 	response := &PublishResponse{
+		NoteID:  result.NoteID,
 		Title:   req.Title,
 		Content: req.Content,
 		Images:  len(imagePaths),
@@ -276,16 +282,16 @@ func (s *XiaohongshuService) processImages(images []string) ([]string, error) {
 }
 
 // publishContent 执行内容发布
-func (s *XiaohongshuService) publishContent(ctx context.Context, content xiaohongshu.PublishImageContent) error {
+func (s *XiaohongshuService) publishContent(ctx context.Context, content xiaohongshu.PublishImageContent) (*xiaohongshu.PublishResult, error) {
 	b := newBrowser()
 	defer b.Close()
 
 	page := b.NewPage()
 	defer page.Close()
 
-	action, err := xiaohongshu.NewPublishImageAction(page)
+	action, err := xiaohongshu.NewPublishImageAction(page.Context(ctx))
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	return action.Publish(ctx, content)
@@ -293,6 +299,8 @@ func (s *XiaohongshuService) publishContent(ctx context.Context, content xiaohon
 
 // PublishVideo 发布视频（本地文件）
 func (s *XiaohongshuService) PublishVideo(ctx context.Context, req *PublishVideoRequest) (*PublishVideoResponse, error) {
+	ctx, cancel := context.WithTimeout(ctx, xiaohongshu.PublishTimeout)
+	defer cancel()
 	// 标题长度校验（小红书限制：最大20个字）
 	if xhsutil.CalcTitleLength(req.Title) > 20 {
 		return nil, fmt.Errorf("标题长度超过限制")
@@ -342,11 +350,13 @@ func (s *XiaohongshuService) PublishVideo(ctx context.Context, req *PublishVideo
 		Products:     req.Products,
 	}
 
-	if err := s.publishVideo(ctx, content); err != nil {
+	result, err := s.publishVideo(ctx, content)
+	if err != nil {
 		return nil, err
 	}
 
 	resp := &PublishVideoResponse{
+		NoteID:  result.NoteID,
 		Title:   req.Title,
 		Content: req.Content,
 		Video:   req.Video,
@@ -356,16 +366,16 @@ func (s *XiaohongshuService) PublishVideo(ctx context.Context, req *PublishVideo
 }
 
 // publishVideo 执行视频发布
-func (s *XiaohongshuService) publishVideo(ctx context.Context, content xiaohongshu.PublishVideoContent) error {
+func (s *XiaohongshuService) publishVideo(ctx context.Context, content xiaohongshu.PublishVideoContent) (*xiaohongshu.PublishResult, error) {
 	b := newBrowser()
 	defer b.Close()
 
 	page := b.NewPage()
 	defer page.Close()
 
-	action, err := xiaohongshu.NewPublishVideoAction(page)
+	action, err := xiaohongshu.NewPublishVideoAction(page.Context(ctx))
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	return action.PublishVideo(ctx, content)
