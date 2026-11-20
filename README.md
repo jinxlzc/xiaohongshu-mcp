@@ -86,6 +86,8 @@ https://github.com/user-attachments/assets/bd9a9a4a-58cb-4421-b8f3-015f703ce1f9
 
 支持发布图文内容到小红书，包括标题、内容描述和图片。
 
+发布未确认成功时，会在进程 cwd 下的 `diag/` 保存截图和脱敏现场，不会在诊断中写入 cookie/token。
+
 **图片支持方式：**
 
 支持两种图片输入方式：

@@ -7,6 +7,7 @@ import (
 	"math/rand"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -17,6 +18,7 @@ import (
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 	"github.com/xpzouying/xiaohongshu-mcp/humanize"
+	"github.com/xpzouying/xiaohongshu-mcp/pkg/xhsutil"
 )
 
 // PublishImageContent 发布图文内容
@@ -461,28 +463,52 @@ func submitPublish(ctx context.Context, page *rod.Page, title, content string, t
 	return waitPublishSuccess(page, 15*time.Second)
 }
 
-// waitPublishSuccess 轮询等待发布成功的信号：小红书发布成功后会跳转离开发布表单页
-// （URL 不再含 /publish/publish）。超时仍未跳转 → 判定发布失败。
-func waitPublishSuccess(page *rod.Page, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
-	for {
-		if info, err := page.Info(); err == nil && !strings.Contains(info.URL, "/publish/publish") {
-			slog.Info("发布成功，已跳转离开发布页", "url", info.URL)
-			return nil
-		}
-		if time.Now().After(deadline) {
-			return errors.New("发布未确认成功：点击发布后未跳转离开发布页（可能校验未过或被拦截）")
-		}
-		time.Sleep(500 * time.Millisecond)
-	}
-}
-
 type publishButton struct {
 	elem     *rod.Element
 	isWidget bool
 }
 
-func clickPublishButton(page *rod.Page) error {
+func clickPublishButton(page *rod.Page) (err error) {
+	started := time.Now()
+	defer func() {
+		if err != nil {
+			err = publishFailureDiagnostic(page, started, publishObservation{}, err)
+		}
+	}()
+	// Esc 只关闭联想，不删除编辑器里的官方话题节点。
+	suggestions, err := page.Elements(strings.Join(mentionItemContainers, ","))
+	if err != nil {
+		return err
+	}
+	for _, suggestion := range suggestions {
+		visible, err := suggestion.Visible()
+		if err != nil {
+			return err
+		}
+		if visible {
+			if err = page.Keyboard.Press(input.Escape); err != nil {
+				return errors.Wrap(err, "关闭发布前联想失败")
+			}
+			break
+		}
+	}
+	if has, title, e := page.Has("div.d-input input"); e != nil {
+		return e
+	} else if has {
+		if e = title.Focus(); e != nil {
+			return e
+		}
+		if e = title.Blur(); e != nil {
+			return e
+		}
+	}
+	if err = checkTitleMaxLength(page); err != nil {
+		return err
+	}
+	if err = checkContentMaxLength(page); err != nil {
+		return err
+	}
+
 	btn, err := waitForPublishButtonClickable(page, 15*time.Second)
 	if err != nil {
 		return err
@@ -555,6 +581,11 @@ func findPublishButton(page *rod.Page) (*publishButton, string, error) {
 			return &publishButton{elem: widget, isWidget: true}, "新版发布按钮不可点击", nil
 		}
 
+		if disabled, err := publishElementDisabled(widget); err != nil {
+			return nil, "", err
+		} else if disabled {
+			return &publishButton{elem: widget, isWidget: true}, "新版发布按钮 disabled/aria-disabled", nil
+		}
 		return &publishButton{elem: widget, isWidget: true}, "", nil
 	}
 
@@ -672,12 +703,32 @@ func tryRefocusTitle(page *rod.Page) {
 
 // 检查标题是否超过最大长度
 func checkTitleMaxLength(page *rod.Page) error {
+	// 复用服务入口的 UTF-16 加权规则，不能依赖超限节点是否渲染。
+	if has, title, err := page.Has("div.d-input input"); err != nil {
+		return err
+	} else if has {
+		value, err := title.Property("value")
+		if err != nil {
+			return err
+		}
+		if n := xhsutil.CalcTitleLength(value.Str()); n > 20 {
+			return errors.Errorf("标题当前输入长度为%d，最大长度为20", n)
+		}
+		message, err := title.Property("validationMessage")
+		if err != nil {
+			return err
+		}
+		if message.Str() != "" {
+			return errors.Errorf("标题校验未通过: %s", redactPublishText(message.Str()))
+		}
+	}
+
 	has, elem, err := page.Has(`div.title-container div.max_suffix`)
 	if err != nil {
 		return errors.Wrap(err, "检查标题长度元素失败")
 	}
 
-	if !has {
+	if !has || !isElementVisible(elem) {
 		return nil
 	}
 
@@ -695,7 +746,7 @@ func checkContentMaxLength(page *rod.Page) error {
 		return errors.Wrap(err, "检查正文长度元素失败")
 	}
 
-	if !has {
+	if !has || !isElementVisible(elem) {
 		return nil
 	}
 
@@ -708,14 +759,18 @@ func checkContentMaxLength(page *rod.Page) error {
 }
 
 func makeMaxLengthError(elemText string) error {
-	parts := strings.Split(elemText, "/")
-	if len(parts) != 2 {
-		return errors.Errorf("长度超过限制: %s", elemText)
+	parts := strings.Split(strings.TrimSpace(elemText), "/")
+	if len(parts) == 2 {
+		current, e1 := strconv.Atoi(strings.TrimSpace(parts[0]))
+		maximum, e2 := strconv.Atoi(strings.TrimSpace(parts[1]))
+		if e1 == nil && e2 == nil && current >= 0 && maximum > 0 {
+			if current <= maximum {
+				return nil
+			}
+			return errors.Errorf("当前输入长度为%d，最大长度为%d", current, maximum)
+		}
 	}
-
-	currLen, maxLen := parts[0], parts[1]
-
-	return errors.Errorf("当前输入长度为%s，最大长度为%s", currLen, maxLen)
+	return errors.Errorf("长度校验提示: %s", redactPublishText(elemText))
 }
 
 // contentElemSelectors 正文输入框的候选选择器，按先后顺序尝试。

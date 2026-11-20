@@ -19,6 +19,7 @@ func TestCalcTitleLength(t *testing.T) {
 		{name: "中英混合-OOTD穿搭分享", input: "OOTD穿搭分享", want: 6},
 		{name: "20个中文字刚好上限", input: "一二三四五六七八九十一二三四五六七八九十", want: 20},
 		{name: "40个英文字母等于20", input: "abcdefghijklmnopqrstuvwxyzabcdefghijklmn", want: 20},
+		{name: "故障原稿标题", input: "没带筹码？我现场写了个德扑记分器🃏", want: 18},
 		{name: "单个emoji", input: "😀", want: 2},
 		{name: "中文加emoji", input: "今天好开心😀", want: 7},
 		{name: "奇数个英文字母向上取整", input: "a", want: 1},
