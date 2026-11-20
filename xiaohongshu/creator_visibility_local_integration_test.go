@@ -53,10 +53,15 @@ func (c *localCreatorClient) Call(ctx context.Context, sessionID, method string,
 
 func creatorFixture(t *testing.T, html func(string) string) *rod.Page {
 	t.Helper()
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return creatorHTTPFixture(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		_, _ = w.Write([]byte(html(r.URL.Path)))
 	}))
+}
+
+func creatorHTTPFixture(t *testing.T, handler http.Handler) *rod.Page {
+	t.Helper()
+	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
 	b := newSearchFixtureBrowser(t, func(client rod.CDPClient) rod.CDPClient {
 		return &localCreatorClient{CDPClient: client, origin: server.URL}
@@ -79,11 +84,12 @@ func TestCreatorAgreementLocal(t *testing.T) {
 			page := creatorFixture(t, func(string) string {
 				return `<div role="dialog">` + tc.body + `<input type="checkbox"><button onclick="this.parentNode.remove();document.querySelector('a').style.display='block'">同意</button></div><a style="display:none" href="/new/note-manager">笔记管理</a>`
 			})
-			require.NoError(t, page.Navigate(urlOfCreatorHome))
-			require.NoError(t, page.WaitLoad())
-			state, err := creatorPageStatus(page)
+			state, err := CheckCreatorLoginStatus(page.GetContext(), page)
 			require.NoError(t, err)
 			require.Equal(t, "agreement_required", state.Status)
+			require.False(t, state.IsLoggedIn)
+			require.True(t, page.MustElement("[role=dialog]").MustVisible())
+			require.False(t, page.MustElement("input").MustProperty("checked").Bool())
 			if tc.want {
 				require.NoError(t, EnsureCreatorSession(page.GetContext(), page))
 				state, err = creatorPageStatus(page)
@@ -103,6 +109,10 @@ func TestCreatorQrcodeLocal(t *testing.T) {
 	page := creatorFixture(t, func(string) string {
 		return `<div class="login-container"><div class="qrcode"><canvas width="100" height="100"></canvas></div></div><script>setTimeout(()=>{const c=document.querySelector('canvas').getContext('2d');c.fillStyle='white';c.fillRect(0,0,100,100);c.fillStyle='black';for(let y=0;y<10;y++)for(let x=0;x<10;x++)if((x+y)%2)c.fillRect(x*10,y*10,10,10);document.body.dataset.ready='yes'},600)</script>`
 	})
+	state, err := CheckCreatorLoginStatus(page.GetContext(), page)
+	require.NoError(t, err)
+	require.Equal(t, "login_required", state.Status)
+	require.False(t, state.IsLoggedIn)
 	img, loggedIn, err := FetchCreatorQrcodeImage(page.GetContext(), page)
 	require.NoError(t, err)
 	require.False(t, loggedIn)

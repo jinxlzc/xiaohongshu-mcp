@@ -1119,7 +1119,7 @@ npx mcporter list xiaohongshu-mcp
 {"is_logged_in":true,"main_site_logged_in":true,"creator":{"is_logged_in":false,"status":"login_required"}}
 ```
 
-创作者 `status` 为 `logged_in`、`login_required`、`agreement_required` 或 `unknown`；后两者不代表已登录。状态检查不会点击协议。若主站已登录而创作者未登录，无需反复删除主站 cookie，可调用独立创作者扫码入口：
+创作者 `status` 为 `logged_in`、`login_required`、`agreement_required` 或 `unknown`；后两者不代表已登录。状态检查不会点击协议。仅创作者未登录时才需要扫码；已登录工作台会在 status 返回 `creator.is_logged_in=true, status=logged_in`，创作者 qrcode 返回 `is_logged_in=true, timeout="0s"` 且不含 `img`，MCP 提示已登录，无需等待二维码。若主站已登录而创作者未登录，无需反复删除主站 cookie，可调用独立创作者扫码入口：
 
 ```bash
 curl http://127.0.0.1:18060/api/v1/login/creator/qrcode
