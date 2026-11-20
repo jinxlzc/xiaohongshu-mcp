@@ -59,6 +59,7 @@ type LoginQrcodeResponse struct {
 
 // PublishResponse 发布响应
 type PublishResponse struct {
+	NoteID  string   `json:"note_id,omitempty"`
 	Title   string   `json:"title"`
 	Content string   `json:"content"`
 	Images  int      `json:"images"`
@@ -80,6 +81,7 @@ type PublishVideoRequest struct {
 
 // PublishVideoResponse 发布视频响应
 type PublishVideoResponse struct {
+	NoteID  string `json:"note_id,omitempty"`
 	Title   string `json:"title"`
 	Content string `json:"content"`
 	Video   string `json:"video"`
@@ -288,12 +290,14 @@ func (s *XiaohongshuService) PublishContent(ctx context.Context, req *PublishReq
 		Products:     req.Products,
 	}
 
-	if err := s.publishContent(ctx, content); err != nil {
+	result, err := s.publishContent(ctx, content)
+	if err != nil {
 		logrus.Errorf("发布内容失败: title=%s %v", content.Title, err)
 		return nil, err
 	}
 
 	response := &PublishResponse{
+		NoteID:  result.NoteID,
 		Title:   req.Title,
 		Content: req.Content,
 		Images:  len(imagePaths),
@@ -311,7 +315,7 @@ func (s *XiaohongshuService) processImages(images []string) ([]string, error) {
 }
 
 // publishContent 执行内容发布
-func (s *XiaohongshuService) publishContent(ctx context.Context, content xiaohongshu.PublishImageContent) error {
+func (s *XiaohongshuService) publishContent(ctx context.Context, content xiaohongshu.PublishImageContent) (*xiaohongshu.PublishResult, error) {
 	b := newBrowser()
 	defer b.Close()
 
@@ -320,7 +324,7 @@ func (s *XiaohongshuService) publishContent(ctx context.Context, content xiaohon
 
 	action, err := xiaohongshu.NewPublishImageAction(page.Context(ctx))
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	return action.Publish(ctx, content)
@@ -379,11 +383,13 @@ func (s *XiaohongshuService) PublishVideo(ctx context.Context, req *PublishVideo
 		Products:     req.Products,
 	}
 
-	if err := s.publishVideo(ctx, content); err != nil {
+	result, err := s.publishVideo(ctx, content)
+	if err != nil {
 		return nil, err
 	}
 
 	resp := &PublishVideoResponse{
+		NoteID:  result.NoteID,
 		Title:   req.Title,
 		Content: req.Content,
 		Video:   req.Video,
@@ -393,7 +399,7 @@ func (s *XiaohongshuService) PublishVideo(ctx context.Context, req *PublishVideo
 }
 
 // publishVideo 执行视频发布
-func (s *XiaohongshuService) publishVideo(ctx context.Context, content xiaohongshu.PublishVideoContent) error {
+func (s *XiaohongshuService) publishVideo(ctx context.Context, content xiaohongshu.PublishVideoContent) (*xiaohongshu.PublishResult, error) {
 	b := newBrowser()
 	defer b.Close()
 
@@ -402,7 +408,7 @@ func (s *XiaohongshuService) publishVideo(ctx context.Context, content xiaohongs
 
 	action, err := xiaohongshu.NewPublishVideoAction(page.Context(ctx))
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	return action.PublishVideo(ctx, content)

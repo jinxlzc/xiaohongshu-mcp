@@ -18,7 +18,8 @@ import (
 )
 
 // PublishTimeout 覆盖填写、上传、本人扫码及成功确认，仅用于发布接口。
-const PublishTimeout = 12 * time.Minute
+const PublishTimeout = 40 * time.Minute
+const publishConfirmTimeout = 2 * time.Minute
 const publishScanTimeout = 5 * time.Minute
 
 type publishScan struct {
@@ -106,6 +107,10 @@ func (w *publishScanWait) update(ctx context.Context, scan *publishScan) error {
 	}
 	if now.Sub(w.started) >= publishScanTimeout {
 		return fmt.Errorf("需要账号本人扫码验证：等待超过5分钟")
+	}
+	// 验证通过后二维码可被移除，等待登录恢复，不再刷新。
+	if strings.Contains(scan.Text, "验证成功") {
+		return nil
 	}
 	if !w.refreshing.IsZero() && now.Sub(w.refreshing) >= 5*time.Second {
 		return fmt.Errorf("需要账号本人扫码验证：刷新后二维码未更新")
