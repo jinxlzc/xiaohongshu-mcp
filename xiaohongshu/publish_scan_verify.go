@@ -291,6 +291,18 @@ func observePublishScan(page *rod.Page) (*publishScan, error) {
 	}
 	var fallback *publishScan
 	for _, anchor := range anchors {
+		// 管理列表的标题与封面可能提到扫码，不能当作独立验证层。
+		cards, err := anchor.Parents(noteCards)
+		if err != nil {
+			return nil, err
+		}
+		isCard, err := anchor.Matches(noteCards)
+		if err != nil {
+			return nil, err
+		}
+		if isCard || len(cards) > 0 {
+			continue
+		}
 		editors, err := anchor.ElementsX(`ancestor-or-self::*[@contenteditable="true" or self::textarea or self::input]`)
 		if err != nil {
 			return nil, err

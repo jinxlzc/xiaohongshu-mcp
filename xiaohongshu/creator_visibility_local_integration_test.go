@@ -155,7 +155,7 @@ func TestNoteVisibilityLocal(t *testing.T) {
 				if path != "/new/note-manager" {
 					return `<a href="/new/note-manager">笔记管理</a>`
 				}
-				html := `<div class="d-options-wrapper"><label class="selected">公开可见</label><label>仅自己可见</label></div><div class="note-item" data-note-id="ffffffffffffffffffffffff"><button onclick="document.body.dataset.wrong='true'">权限设置</button></div><div class="note-item" data-note-id="` + id + `"><button onclick="document.querySelector('[role=dialog]').style.display='block'">权限设置</button></div><div role="dialog" style="display:none">`
+				html := `<div class="d-options-wrapper"><label class="selected">公开可见</label><label>仅自己可见</label></div><div class="note-item" data-note-id="ffffffffffffffffffffffff"><button onclick="document.body.dataset.wrong='true'">权限设置</button></div><div class="note-card" data-impression='{"noteTarget":{"value":{"noteId":"` + id + `"}}}'><button onclick="document.querySelector('[role=dialog]').style.display='block'">权限设置</button></div><div role="dialog" style="display:none">`
 				for i, v := range []string{"公开可见", "仅自己可见", "仅互关好友可见"} {
 					html += fmt.Sprintf(`<label><input type="radio" name="visibility" value="%d" %s>%s</label>`, i, map[bool]string{true: "checked"}[current.Load().(string) == v], v)
 				}
