@@ -120,8 +120,8 @@ func (a *LoginAction) WaitForLogin(ctx context.Context) bool {
 		case <-ctx.Done():
 			return false
 		case <-ticker.C:
-			el, err := pp.Element(".main-container .user .link-wrapper .channel")
-			if err == nil && el != nil {
+			exists, _, err := pp.Has(".main-container .user .link-wrapper .channel")
+			if err == nil && exists {
 				return true
 			}
 		}

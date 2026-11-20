@@ -1110,3 +1110,11 @@ This project is open source under the [Apache License 2.0](LICENSE).
 You are free to use, modify and distribute this project, including for commercial purposes, as long as you keep the original copyright notice and license file. The [LICENSE](LICENSE) file is the authoritative source for the full terms.
 
 Contributions submitted to this project are licensed under the same license by default.
+
+### Published-note visibility and creator login
+
+Use `set_note_visibility` (MCP) or `POST /api/v1/feeds/visibility` with required `feed_id` and `visibility` (`公开可见`, `仅自己可见`, or `仅互关好友可见`). Optional `xsec_token` is accepted but unused by the creator management-page workflow. Only a single note owned by the current account is supported. Results include `before`, `after`, and `status`: `skipped` when already at the target, or `updated` after reloading and verifying persisted visibility. Unknown state or failed verification is an error.
+
+`GET /api/v1/login/status` keeps `is_logged_in` for the main site and adds `main_site_logged_in` plus `creator: {is_logged_in,status,message?}`. Creator status is `logged_in`, `login_required`, `agreement_required`, or `unknown`. Status checks do not accept agreements. Main-site QR login attempts creator initialization; only explicit agreement acknowledgment buttons are clicked, with no checkbox selection or marketing/payment consent.
+
+If creator login is still required, call `get_creator_login_qrcode` (MCP, no arguments) or `GET /api/v1/login/creator/qrcode`. The response uses the existing `{timeout,is_logged_in,img}` format with a base64 PNG data URL. A new QR request replaces the previous pending login; successful login persists both sites' sessions together. See the [Chinese usage examples and device verification notes](README.md#已发布笔记可见范围与创作者登录). Live creator-page selectors and paths require device verification.

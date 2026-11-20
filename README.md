@@ -1108,3 +1108,46 @@ npx mcporter list xiaohongshu-mcp
 你可以自由地使用、修改和分发本项目，包括用于商业用途，只需保留原始的版权声明和许可证文件。详细条款以 [LICENSE](LICENSE) 文件为准。
 
 向本项目提交的贡献，默认按同一许可证授权。
+
+## 已发布笔记可见范围与创作者登录
+
+主站登录和创作者中心登录分别检查。主站扫码成功后会尝试打开创作者中心，处理必要的协议确认，再保存同一浏览器中的两站会话。自动确认仅限协议/条款/隐私弹窗中的「同意」「同意并继续」「我知道了」「知道了」，不会勾选复选框；涉及营销、订阅或付费的弹窗不会自动确认。协议无法识别时需人工检查。
+
+`GET /api/v1/login/status` 保留 `data.is_logged_in`（主站），新增 `data.main_site_logged_in` 和 `data.creator`：
+
+```json
+{"is_logged_in":true,"main_site_logged_in":true,"creator":{"is_logged_in":false,"status":"login_required"}}
+```
+
+创作者 `status` 为 `logged_in`、`login_required`、`agreement_required` 或 `unknown`；后两者不代表已登录。状态检查不会点击协议。若主站已登录而创作者未登录，无需反复删除主站 cookie，可调用独立创作者扫码入口：
+
+```bash
+curl http://127.0.0.1:18060/api/v1/login/creator/qrcode
+curl http://127.0.0.1:18060/api/v1/login/status
+```
+
+二维码响应沿用 `{timeout,is_logged_in,img}`，`img` 是 `data:image/png;base64,...`。后台最多等待约 4 分钟，用户用小红书 App 扫码成功后保存全部域的会话；新取主站或创作者二维码会取消上一个待扫码会话。MCP 对应工具为 `get_creator_login_qrcode`，无需参数。自动建立的会话在登录流程中持久化；发布/权限操作不会用自己的旧浏览器快照覆盖登录文件。
+
+**修改单篇已发布笔记：** MCP 工具 `set_note_visibility`，REST `POST /api/v1/feeds/visibility`。
+
+| 参数 | 必填 | 说明 |
+| --- | --- | --- |
+| `feed_id` | 是 | 当前账号已发布笔记的 24 位十六进制 ID |
+| `xsec_token` | 否 | 兼容调用方传入；创作者管理页路径不使用此值 |
+| `visibility` | 是 | `公开可见` / `仅自己可见` / `仅互关好友可见` |
+
+```json
+{"name":"set_note_visibility","arguments":{"feed_id":"0123456789abcdef01234567","visibility":"仅自己可见"}}
+```
+
+```bash
+curl -X POST http://127.0.0.1:18060/api/v1/feeds/visibility \
+  -H 'Content-Type: application/json' \
+  -d '{"feed_id":"0123456789abcdef01234567","visibility":"仅自己可见"}'
+```
+
+如启用服务鉴权，请按现有配置增加 `Authorization: Bearer ...` 请求头。
+
+结果含 `feed_id`、`before`、`after`、`status`。已是目标状态返回 `skipped`；修改后重新打开管理页并回读一致才返回 `updated`。无法识别当前状态、不是自己的笔记、账号不支持目标权限或回读不一致均报错；提交后回读失败时请先检查实际状态。没有批量接口，也不调用逆向签名 API。
+
+页面自动化依赖创作者中心 DOM；本地测试使用拦截页面，不代表已验证线上页面。部署后请在真机核对 `/new/note-manager` 路径、笔记 ID/分页/权限选择器、三种选项、协议弹窗与二维码登录入口，并验证重启服务后的创作者会话保持。
