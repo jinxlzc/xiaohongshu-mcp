@@ -19,6 +19,9 @@ const (
 	noteCards         = `.note-item, .note-card, .note-list-item, [data-note-id]`
 	permissionPanels  = `[role="dialog"], .d-modal, .d-dialog, .el-dialog, .d-options-wrapper, .permission-popover`
 	noteActionPanels  = permissionPanels + `, [role="alertdialog"], .d-popover, .el-popover`
+	permissionButtons = `button, [role="button"], .d-button, .btn-cancel, .btn-confirm`
+	permissionSelects = `.d-select-content, [role="combobox"]`
+	permissionTitle   = `.//*[normalize-space(text())="权限设置"]`
 	permissionOptions = `[role="radio"], [role="option"], label, .custom-option, .permission-option`
 )
 
@@ -126,10 +129,24 @@ func SetNoteVisibility(ctx context.Context, page *rod.Page, feedID, visibility s
 		if err != nil {
 			return "", err
 		}
-		return selectedNoteVisibility(panel)
+		value, err := selectedNoteVisibility(panel)
+		if err != nil {
+			return "", err
+		}
+		// 下拉弹窗回读已达目标时取消退出，幂等调用不提交。
+		modal, err := isNotePermissionModal(panel)
+		if err != nil {
+			return "", err
+		}
+		if modal && value == visibility {
+			if err := closeNoteActionPanel(panel); err != nil {
+				return "", err
+			}
+		}
+		return value, nil
 	}
 	write := func() error {
-		options, err := panel.Elements(permissionOptions)
+		options, err := noteVisibilityOptions(pp, panel)
 		if err != nil {
 			return err
 		}
@@ -139,7 +156,11 @@ func SetNoteVisibility(ctx context.Context, page *rod.Page, feedID, visibility s
 			if err != nil {
 				return err
 			}
-			if visibilityLabel(text) == visibility {
+			deleted, err := option.Matches(`.note-card__action-btn--del, .note-card__action-btn--del *`)
+			if err != nil {
+				return err
+			}
+			if !deleted && visibilityLabel(text) == visibility {
 				visible, err := option.Visible()
 				if err != nil {
 					return err
@@ -162,7 +183,7 @@ func SetNoteVisibility(ctx context.Context, page *rod.Page, feedID, visibility s
 			return err
 		}
 		// 某些面板选择即保存，另一些需要明确确认。只在当前权限面板中查找。
-		buttons, err := panel.Elements(`button, [role="button"], .d-button`)
+		buttons, err := panel.Elements(permissionButtons)
 		if err == nil {
 			for _, button := range buttons {
 				text, e := button.Text()
@@ -203,6 +224,26 @@ func visibilityLabel(text string) string {
 }
 
 func selectedNoteVisibility(panel *rod.Element) (string, error) {
+	modal, err := isNotePermissionModal(panel)
+	if err != nil {
+		return "", err
+	}
+	if modal {
+		selectBox, err := notePermissionSelect(panel)
+		if err != nil {
+			return "", err
+		}
+		if selectBox != nil {
+			text, err := selectBox.Text()
+			if err != nil {
+				return "", err
+			}
+			if value := visibilityLabel(text); value != "" {
+				return value, nil
+			}
+			return "", fmt.Errorf("无法识别权限下拉框当前值")
+		}
+	}
 	options, err := panel.Elements(permissionOptions)
 	if err != nil {
 		return "", err
@@ -266,6 +307,192 @@ func selectedNoteVisibility(panel *rod.Element) (string, error) {
 	return selected, nil
 }
 
+// 标题和取消/确定共同限定弹窗，不依赖未展开的选项数量。
+func isNotePermissionModal(panel *rod.Element) (bool, error) {
+	titles, err := panel.ElementsX(permissionTitle)
+	if err != nil {
+		return false, err
+	}
+	titleCount := 0
+	for _, title := range titles {
+		visible, err := title.Visible()
+		if err != nil {
+			return false, err
+		}
+		if visible {
+			titleCount++
+		}
+	}
+	if titleCount != 1 {
+		return false, nil
+	}
+	buttons, err := panel.Elements(permissionButtons)
+	if err != nil {
+		return false, err
+	}
+	cancel, confirm := false, false
+	for _, button := range buttons {
+		visible, err := button.Visible()
+		if err != nil {
+			return false, err
+		}
+		if !visible {
+			continue
+		}
+		text, err := button.Text()
+		if err != nil {
+			return false, err
+		}
+		cancel = cancel || strings.TrimSpace(text) == "取消"
+		confirm = confirm || strings.TrimSpace(text) == "确定"
+	}
+	return cancel && confirm, nil
+}
+
+// 真实弹窗未必带 dialog class；从标题向上寻找最小完整容器。
+func noteActionPanelElements(page *rod.Page) (rod.Elements, error) {
+	panels, err := page.Elements(noteActionPanels)
+	if err != nil {
+		return nil, err
+	}
+	titles, err := page.ElementsX(permissionTitle)
+	if err != nil {
+		return nil, err
+	}
+	for _, title := range titles {
+		visible, err := title.Visible()
+		if err != nil {
+			return nil, err
+		}
+		if !visible {
+			continue
+		}
+		parents, err := title.Parents(":not(body):not(html)")
+		if err != nil {
+			return nil, err
+		}
+		for _, parent := range parents {
+			modal, err := isNotePermissionModal(parent)
+			if err != nil {
+				return nil, err
+			}
+			if modal {
+				panels = append(panels, parent)
+				break
+			}
+		}
+	}
+	seen := map[proto.DOMBackendNodeID]bool{}
+	var unique rod.Elements
+	for _, panel := range panels {
+		node, err := panel.Describe(0, false)
+		if err != nil {
+			return nil, err
+		}
+		if !seen[node.BackendNodeID] {
+			seen[node.BackendNodeID] = true
+			unique = append(unique, panel)
+		}
+	}
+	return unique, nil
+}
+
+func notePermissionSelect(panel *rod.Element) (*rod.Element, error) {
+	selects, err := panel.Elements(permissionSelects)
+	if err != nil {
+		return nil, err
+	}
+	var result *rod.Element
+	for _, selectBox := range selects {
+		visible, err := selectBox.Visible()
+		if err != nil {
+			return nil, err
+		}
+		if visible {
+			if result != nil {
+				return nil, fmt.Errorf("权限面板有多个下拉框，拒绝修改")
+			}
+			result = selectBox
+		}
+	}
+	return result, nil
+}
+
+// 兼容弹窗内选项和挂载到 body 的下拉层，排除点击前已展开的筛选器。
+func noteVisibilityOptions(page *rod.Page, panel *rod.Element) (rod.Elements, error) {
+	selectBox, err := notePermissionSelect(panel)
+	if err != nil {
+		return nil, err
+	}
+	if selectBox == nil {
+		return panel.Elements(permissionOptions)
+	}
+	const lists = `.d-options-wrapper, [role="listbox"]`
+	existing := map[proto.DOMBackendNodeID]bool{}
+	before, err := page.Elements(lists)
+	if err != nil {
+		return nil, err
+	}
+	for _, list := range before {
+		visible, err := list.Visible()
+		if err != nil {
+			return nil, err
+		}
+		if visible {
+			node, err := list.Describe(0, false)
+			if err != nil {
+				return nil, err
+			}
+			existing[node.BackendNodeID] = true
+		}
+	}
+	if err := selectBox.Click(proto.InputMouseButtonLeft, 1); err != nil {
+		return nil, err
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		opened, err := page.Elements(lists)
+		if err != nil {
+			return nil, err
+		}
+		var candidates rod.Elements
+		for _, list := range opened {
+			visible, err := list.Visible()
+			if err != nil {
+				return nil, err
+			}
+			if !visible {
+				continue
+			}
+			node, err := list.Describe(0, false)
+			if err != nil {
+				return nil, err
+			}
+			if !existing[node.BackendNodeID] {
+				candidates = append(candidates, list)
+			}
+		}
+		if len(candidates) > 1 {
+			return nil, fmt.Errorf("出现多个可见范围下拉层，拒绝修改")
+		}
+		if len(candidates) == 1 {
+			options, err := candidates[0].Elements(permissionOptions)
+			if err != nil {
+				return nil, err
+			}
+			if len(options) > 0 {
+				return options, nil
+			}
+		}
+		if time.Now().After(deadline) {
+			return nil, fmt.Errorf("展开权限下拉框后未找到可见范围选项")
+		}
+		if err := waitCreatorPoll(page.GetContext()); err != nil {
+			return nil, err
+		}
+	}
+}
+
 func openNotePermission(page *rod.Page, card *rod.Element) (*rod.Element, error) {
 	if err := card.ScrollIntoView(); err != nil {
 		return nil, err
@@ -279,7 +506,7 @@ func openNotePermission(page *rod.Page, card *rod.Element) (*rod.Element, error)
 	}
 	// 排除点击前已展开的筛选器或其他笔记面板。
 	existing := map[proto.DOMBackendNodeID]bool{}
-	panels, err := page.Elements(noteActionPanels)
+	panels, err := noteActionPanelElements(page)
 	if err != nil {
 		return nil, err
 	}
@@ -336,7 +563,7 @@ func openNotePermission(page *rod.Page, card *rod.Element) (*rod.Element, error)
 }
 
 func newNoteActionPanels(page *rod.Page, existing map[proto.DOMBackendNodeID]bool) (rod.Elements, error) {
-	panels, err := page.Elements(noteActionPanels)
+	panels, err := noteActionPanelElements(page)
 	if err != nil {
 		return nil, err
 	}
@@ -410,6 +637,14 @@ func waitNotePermissionPanel(page *rod.Page, existing map[proto.DOMBackendNodeID
 				}
 				return nil, nil, fmt.Errorf("出现删除确认，已取消并停止操作")
 			}
+			modal, err := isNotePermissionModal(panel)
+			if err != nil {
+				return nil, nil, err
+			}
+			if modal {
+				candidates = append(candidates, panel)
+				continue
+			}
 			options, err := panel.Elements(permissionOptions)
 			if err != nil {
 				return nil, nil, err
@@ -452,11 +687,11 @@ func waitNotePermissionPanel(page *rod.Page, existing map[proto.DOMBackendNodeID
 
 // 仅使用明确的取消、关闭按钮或 Escape，不点击保存、确认等操作。
 func closeNoteActionPanel(panel *rod.Element) error {
-	buttons, err := panel.Elements(`button, [role="button"], .d-button, [aria-label="关闭"], [title="关闭"], .d-modal-close, .d-dialog-close, .el-dialog__headerbtn`)
+	buttons, err := panel.Elements(permissionButtons + `, [aria-label="关闭"], [title="关闭"], .d-modal-close, .d-dialog-close, .el-dialog__headerbtn`)
 	if err != nil {
 		return err
 	}
-	clicked := false
+	var dismiss *rod.Element
 	for _, button := range buttons {
 		visible, err := button.Visible()
 		if err != nil {
@@ -476,13 +711,18 @@ func closeNoteActionPanel(panel *rod.Element) error {
 		if text = strings.TrimSpace(text); text != "取消" && text != "关闭" && !(text == "" && close) {
 			continue
 		}
-		if err := button.Click(proto.InputMouseButtonLeft, 1); err != nil {
+		if dismiss == nil || text == "取消" {
+			dismiss = button
+		}
+		if text == "取消" {
+			break
+		}
+	}
+	if dismiss != nil {
+		if err := dismiss.Click(proto.InputMouseButtonLeft, 1); err != nil {
 			return err
 		}
-		clicked = true
-		break
-	}
-	if !clicked {
+	} else {
 		if err := panel.Page().Keyboard.Type(input.Escape); err != nil {
 			return err
 		}
@@ -490,7 +730,7 @@ func closeNoteActionPanel(panel *rod.Element) error {
 	bounded := panel.Timeout(2 * time.Second)
 	defer bounded.CancelTimeout()
 	if err := bounded.WaitInvisible(); err != nil {
-		return fmt.Errorf("无法确认错误面板已关闭，停止尝试权限入口: %w", err)
+		return fmt.Errorf("无法确认操作面板已关闭，停止后续操作: %w", err)
 	}
 	return nil
 }
