@@ -1,0 +1,56 @@
+<!doctype html>
+<meta charset="utf-8">
+<style>
+  [hidden] { display: none !important; }
+  .note-card { width: 600px; height: 120px; margin: 20px; }
+  .note-card__actions { display: flex; }
+  .note-card__action-btn, .btn-cancel, .btn-confirm { padding: 12px; cursor: pointer; }
+  svg { width: 20px; height: 20px; }
+  #modal { position: fixed; top: 160px; left: 40px; width: 500px; background: white; padding: 24px; }
+  .d-select-content, .custom-option { padding: 12px; cursor: pointer; }
+  #choices { position: fixed; top: 300px; left: 40px; background: white; z-index: 2; }
+  #unrelated { position: fixed; right: 0; top: 0; }
+</style>
+<main>
+<div><button onclick="log('wrong-note')">权限设置</button></div>
+<!-- 只保留证据中的标题、按钮 class 和仓库已有的下拉组件结构。 -->
+<div id="unrelated" class="d-options-wrapper"><label onclick="log('wrong-filter')">仅自己可见</label></div>
+<div class="note-card" data-note-id="0123456789abcdef01234567">
+  脱敏测试笔记
+  <div class="note-card__actions">
+    <span class="note-card__action-btn note-card__action-btn--del" onclick="log('deleted')"><svg><circle cx="10" cy="10" r="8"/></svg></span>
+    <span class="note-card__action-btn" onclick="log('icon');document.querySelector('#modal').hidden=false"><svg><circle cx="10" cy="10" r="8"/></svg></span>
+    <span class="note-card__action-btn" onclick="log('wrong-icon')"><svg><circle cx="10" cy="10" r="8"/></svg></span>
+  </div>
+</div>
+<div id="modal" hidden>
+  <div><span>权限设置</span><span aria-label="关闭" onclick="log('close');closeModal()"><svg><path d="M2 2 L18 18 M18 2 L2 18"/></svg></span></div>
+  <div>笔记预览：这是脱敏标题</div>
+  <div class="d-select-content" onclick="log('expand');setTimeout(()=>document.querySelector('#choices').hidden=false,150)"><span id="value">__VALUE__</span><svg><path d="M2 5 L10 13 L18 5"/></svg></div>
+  <div>
+    <span class="btn-cancel d-button" onclick="log('cancel');closeModal()">取消</span>
+    <span class="btn-confirm bg-red d-button" onclick="log('confirm');fetch('/save/'+values.indexOf(document.querySelector('#value').textContent)).then(closeModal)">确定</span>
+  </div>
+</div>
+<div id="choices" class="d-options-wrapper" hidden>
+  <div class="d-grid-item"><div class="custom-option" onclick="choose(0)">公开可见</div></div>
+  <div class="d-grid-item"><div class="custom-option" onclick="choose(1)">仅自己可见</div></div>
+  <div class="d-grid-item"><div class="custom-option" onclick="choose(2)">仅互关好友可见</div></div>
+</div>
+</main>
+<script>
+  const values = ['公开可见', '仅自己可见', '仅互关好友可见'];
+  function log(value) { localStorage.events = (localStorage.events || '') + value + ','; }
+  function closeModal() {
+    document.querySelector('#modal').hidden = true;
+    document.querySelector('#choices').hidden = true;
+  }
+  function choose(index) {
+    log('select');
+    document.querySelector('#value').textContent = values[index];
+    document.querySelector('#choices').hidden = true;
+  }
+  document.addEventListener('keydown', event => {
+    if (event.key === 'Escape') { log('escape'); event.preventDefault(); }
+  });
+</script>
