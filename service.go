@@ -43,9 +43,11 @@ type PublishRequest struct {
 
 // LoginStatusResponse 登录状态响应
 type LoginStatusResponse struct {
-	IsLoggedIn bool   `json:"is_logged_in"`
-	Username   string `json:"username,omitempty"` // 当前登录账号的昵称
-	UserID     string `json:"user_id,omitempty"`  // 用户唯一标识（个人主页 URL 中的 ID）
+	MainSiteLoggedIn bool                           `json:"main_site_logged_in"`
+	Creator          xiaohongshu.CreatorLoginStatus `json:"creator"`
+	IsLoggedIn       bool                           `json:"is_logged_in"`
+	Username         string                         `json:"username,omitempty"` // 当前登录账号的昵称
+	UserID           string                         `json:"user_id,omitempty"`  // 用户唯一标识（个人主页 URL 中的 ID）
 }
 
 // LoginQrcodeResponse 登录扫码二维码
@@ -120,7 +122,8 @@ func (s *XiaohongshuService) CheckLoginStatus(ctx context.Context) (*LoginStatus
 	}
 
 	response := &LoginStatusResponse{
-		IsLoggedIn: isLoggedIn,
+		IsLoggedIn:       isLoggedIn,
+		MainSiteLoggedIn: isLoggedIn,
 	}
 
 	// 已登录时从当前页读取真实账号信息；读不到只记 warn，不影响状态返回。
@@ -133,75 +136,105 @@ func (s *XiaohongshuService) CheckLoginStatus(ctx context.Context) (*LoginStatus
 		}
 	}
 
+	creatorPage := b.NewPage()
+	defer creatorPage.Close()
+	response.Creator, err = xiaohongshu.CheckCreatorLoginStatus(ctx, creatorPage)
+	if err != nil {
+		response.Creator = xiaohongshu.CreatorLoginStatus{Status: "unknown", Message: "创作者中心检查失败，请重试并核对页面"}
+		logrus.Warnf("创作者中心状态检查失败: %v", err)
+	}
+
 	return response, nil
 }
 
-// GetLoginQrcode 获取登录的扫码二维码
+// GetLoginQrcode 获取主站二维码，扫码后尝试建立创作者会话。
 func (s *XiaohongshuService) GetLoginQrcode(ctx context.Context) (*LoginQrcodeResponse, error) {
-	b := newBrowser()
-	// 建页和取码都可能 panic。只有后台接手扫码后，才由它关闭浏览器。
+	return s.getLoginQrcode(ctx, false)
+}
+
+func (s *XiaohongshuService) GetCreatorLoginQrcode(ctx context.Context) (*LoginQrcodeResponse, error) {
+	return s.getLoginQrcode(ctx, true)
+}
+
+func (s *XiaohongshuService) getLoginQrcode(ctx context.Context, creator bool) (*LoginQrcodeResponse, error) {
+	sessionCtx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	seq := s.logins.start(cancel)
 	handedOff := false
+	defer func() {
+		if !handedOff {
+			cancel()
+			s.logins.finish(seq)
+		}
+	}()
+	b := newBrowser()
 	defer func() {
 		if !handedOff {
 			b.Close()
 		}
 	}()
-
 	page := b.NewPage()
-	loginAction := xiaohongshu.NewLogin(page)
-
-	img, loggedIn, err := loginAction.FetchQrcodeImage(ctx)
+	action := xiaohongshu.NewLogin(page)
+	fetchCtx, fetchCancel := context.WithCancel(ctx)
+	stop := context.AfterFunc(sessionCtx, fetchCancel)
+	defer fetchCancel()
+	defer stop()
+	var img string
+	var loggedIn bool
+	var err error
+	if creator {
+		img, loggedIn, err = xiaohongshu.FetchCreatorQrcodeImage(fetchCtx, page)
+	} else {
+		img, loggedIn, err = action.FetchQrcodeImage(fetchCtx)
+	}
 	if err != nil {
 		return nil, err
 	}
-
-	timeout := 4 * time.Minute
-
-	if !loggedIn {
-		s.waitScanInBackground(loginAction, page, b.Close, timeout)
-		handedOff = true
-	}
-
-	return &LoginQrcodeResponse{
-		Timeout: func() string {
-			if loggedIn {
-				return "0s"
+	complete := func(completionCtx context.Context) error {
+		if err := completionCtx.Err(); err != nil {
+			return err
+		}
+		if !creator {
+			// 先保存主站登录，创作者单独扫码失败不能丢失主站会话。
+			if err := s.logins.runIfCurrent(seq, func() error { return saveCookies(page.Context(completionCtx)) }); err != nil {
+				return err
 			}
-			return timeout.String()
-		}(),
-		Img:        img,
-		IsLoggedIn: loggedIn,
-	}, nil
-}
-
-// waitScanInBackground 在后台等用户扫码，扫上了就存 cookie。
-//
-// 浏览器必须一直活着才检测得到扫码，所以这里不能提前关；但也不能任由它堆积——
-// 再取一次二维码就会把上一个还在等的会话关掉，同一时刻只留一个。
-func (s *XiaohongshuService) waitScanInBackground(
-	loginAction *xiaohongshu.LoginAction, page *rod.Page, closeBrowser func(), timeout time.Duration,
-) {
-	ctxTimeout, cancel := context.WithTimeout(context.Background(), timeout)
-	seq := s.logins.start(cancel)
-	logrus.Infof("等待扫码登录，会话 #%d，超时 %s", seq, timeout)
-
+			if err := xiaohongshu.EnsureCreatorSession(completionCtx, page); err != nil {
+				if completionCtx.Err() != nil {
+					return completionCtx.Err()
+				}
+				logrus.Warnf("主站已登录，创作者会话尚未建立: %v", err)
+				return nil
+			}
+		}
+		if err := completionCtx.Err(); err != nil {
+			return err
+		}
+		return s.logins.runIfCurrent(seq, func() error { return saveCookies(page.Context(completionCtx)) })
+	}
+	if loggedIn {
+		if err := complete(fetchCtx); err != nil {
+			return nil, err
+		}
+		return &LoginQrcodeResponse{Timeout: "0s", IsLoggedIn: true}, nil
+	}
+	handedOff = true
 	go func() {
-		defer closeBrowser()
+		defer b.Close()
 		defer cancel()
 		defer s.logins.finish(seq)
-
-		if loginAction.WaitForLogin(ctxTimeout) {
-			if err := saveCookies(page); err != nil {
-				logrus.Errorf("扫码成功但保存 cookies 失败，会话 #%d: %v", seq, err)
-				return
-			}
-			logrus.Infof("扫码登录成功，cookies 已保存，会话 #%d", seq)
-			return
+		var ok bool
+		if creator {
+			ok = xiaohongshu.WaitForCreatorLogin(sessionCtx, page)
+		} else {
+			ok = action.WaitForLogin(sessionCtx)
 		}
-
-		// 没等到扫码：要么超时，要么被新取的二维码取代
-		logrus.Infof("登录会话 #%d 结束，未检测到扫码（超时或已被新的二维码取代）", seq)
+		if ok {
+			if err := complete(sessionCtx); err != nil {
+				logrus.Errorf("扫码会话 #%d 保存失败: %v", seq, err)
+			}
+		}
 	}()
+	return &LoginQrcodeResponse{Timeout: "4m0s", Img: img}, nil
 }
 
 // PublishContent 发布内容
@@ -631,7 +664,7 @@ func newBrowser() *headless_browser.Browser {
 }
 
 func saveCookies(page *rod.Page) error {
-	cks, err := page.Browser().GetCookies()
+	cks, err := page.Browser().Context(page.GetContext()).GetCookies()
 	if err != nil {
 		return err
 	}

@@ -1,6 +1,9 @@
 package main
 
-import "sync"
+import (
+	"errors"
+	"sync"
+)
 
 // loginSessions 管理「已发出二维码、还在等扫码」的登录会话。
 //
@@ -39,4 +42,14 @@ func (l *loginSessions) finish(seq uint64) {
 	if l.seq == seq {
 		l.cancel = nil
 	}
+}
+
+// runIfCurrent 防止被替换的扫码会话覆盖新会话的持久化结果。
+func (l *loginSessions) runIfCurrent(seq uint64, fn func() error) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.seq != seq || l.cancel == nil {
+		return errors.New("扫码会话已被替换")
+	}
+	return fn()
 }

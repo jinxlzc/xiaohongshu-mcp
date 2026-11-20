@@ -1108,3 +1108,9 @@ npx mcporter list xiaohongshu-mcp
 你可以自由地使用、修改和分发本项目，包括用于商业用途，只需保留原始的版权声明和许可证文件。详细条款以 [LICENSE](LICENSE) 文件为准。
 
 向本项目提交的贡献，默认按同一许可证授权。
+
+### 创作者中心登录状态
+
+`check_login_status` / `GET /api/v1/login/status` 保留主站 `is_logged_in`，并提供 `main_site_logged_in` 和独立的 `creator` 状态（`logged_in`、`login_required`、`agreement_required`、`unknown`）。页面故障不会被误报为退出登录。
+
+需要单独登录时，使用 `get_creator_login_qrcode` 或 `GET /api/v1/login/creator/qrcode`。已进入创作者工作台时直接返回已登录，不再等待二维码；否则返回二维码并在后台等待扫码，重新取码会替换待扫码会话。主站扫码完成后尝试建立创作者会话，失败也保留主站登录。状态检查不点击协议；建会话仅确认必要协议，不勾选可选项或付费、营销选项。
