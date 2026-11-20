@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/go-rod/rod"
+	"github.com/go-rod/rod/lib/input"
 	"github.com/go-rod/rod/lib/proto"
 )
 
@@ -17,6 +18,7 @@ const (
 	urlOfNoteManager  = "https://creator.xiaohongshu.com/new/note-manager"
 	noteCards         = `.note-item, .note-card, .note-list-item, [data-note-id]`
 	permissionPanels  = `[role="dialog"], .d-modal, .d-dialog, .el-dialog, .d-options-wrapper, .permission-popover`
+	noteActionPanels  = permissionPanels + `, [role="alertdialog"], .d-popover, .el-popover`
 	permissionOptions = `[role="radio"], [role="option"], label, .custom-option, .permission-option`
 )
 
@@ -271,13 +273,13 @@ func openNotePermission(page *rod.Page, card *rod.Element) (*rod.Element, error)
 	if err := card.Hover(); err != nil {
 		return nil, err
 	}
-	trigger, err := notePermissionTrigger(page, card)
+	triggers, icons, err := notePermissionTriggers(page, card)
 	if err != nil {
 		return nil, err
 	}
 	// 排除点击前已展开的筛选器或其他笔记面板。
 	existing := map[proto.DOMBackendNodeID]bool{}
-	panels, err := page.Elements(permissionPanels)
+	panels, err := page.Elements(noteActionPanels)
 	if err != nil {
 		return nil, err
 	}
@@ -286,70 +288,211 @@ func openNotePermission(page *rod.Page, card *rod.Element) (*rod.Element, error)
 		if err != nil {
 			return nil, err
 		}
-		if visible {
-			node, err := panel.Describe(0, false)
-			if err != nil {
-				return nil, err
-			}
-			existing[node.BackendNodeID] = true
+		if !visible {
+			continue
 		}
-	}
-	if err := trigger.Click(proto.InputMouseButtonLeft, 1); err != nil {
-		return nil, err
-	}
-	if err := waitNoteVerification(page); err != nil {
-		return nil, err
-	}
-	pp := page.Timeout(12 * time.Second)
-	defer pp.CancelTimeout()
-	for {
-		panels, err := pp.Elements(permissionPanels)
+		node, err := panel.Describe(0, false)
 		if err != nil {
 			return nil, err
 		}
-		var candidates []*rod.Element
-		for _, panel := range panels {
-			visible, err := panel.Visible()
+		existing[node.BackendNodeID] = true
+	}
+	for _, trigger := range triggers {
+		// 每次点击前重新检查，绝不点击删除按钮及其子节点。
+		deleted, err := trigger.Matches(`.note-card__action-btn--del, .note-card__action-btn--del *`)
+		if err != nil {
+			return nil, err
+		}
+		if deleted {
+			continue
+		}
+		if err := card.Hover(); err != nil {
+			return nil, err
+		}
+		if err := trigger.Click(proto.InputMouseButtonLeft, 1); err != nil {
+			return nil, err
+		}
+		if err := waitNoteVerification(page); err != nil {
+			return nil, err
+		}
+		panel, opened, err := waitNotePermissionPanel(page, existing, icons)
+		if err != nil {
+			return nil, err
+		}
+		if panel != nil {
+			return panel, nil
+		}
+		if len(opened) == 0 {
+			return nil, fmt.Errorf("点击后未找到可识别的面板，无法安全继续尝试权限入口")
+		}
+		// 只有确认错误面板已关闭，才允许尝试下一个非删除按钮。
+		for _, other := range opened {
+			if err := closeNoteActionPanel(other); err != nil {
+				return nil, err
+			}
+		}
+	}
+	return nil, fmt.Errorf("非删除操作中未找到笔记权限面板，请核对管理页选择器")
+}
+
+func newNoteActionPanels(page *rod.Page, existing map[proto.DOMBackendNodeID]bool) (rod.Elements, error) {
+	panels, err := page.Elements(noteActionPanels)
+	if err != nil {
+		return nil, err
+	}
+	var visiblePanels rod.Elements
+	for _, panel := range panels {
+		visible, err := panel.Visible()
+		if err != nil {
+			return nil, err
+		}
+		if !visible {
+			continue
+		}
+		node, err := panel.Describe(0, false)
+		if err != nil {
+			return nil, err
+		}
+		if !existing[node.BackendNodeID] {
+			visiblePanels = append(visiblePanels, panel)
+		}
+	}
+	var result rod.Elements
+	for i, panel := range visiblePanels {
+		// 同一弹层的外壳和选项容器只算一个面板。
+		nested := false
+		for j, outer := range visiblePanels {
+			if i == j {
+				continue
+			}
+			contains, err := outer.ContainsElement(panel)
 			if err != nil {
 				return nil, err
 			}
-			if !visible {
-				continue
+			nested = nested || contains
+		}
+		if nested {
+			continue
+		}
+		result = append(result, panel)
+	}
+	return result, nil
+}
+
+func waitNotePermissionPanel(page *rod.Page, existing map[proto.DOMBackendNodeID]bool, icon bool) (*rod.Element, rod.Elements, error) {
+	deadline := time.Now().Add(12 * time.Second)
+	for {
+		// 验证可能晚于第一次静默等待出现，不能把扫码层当成错误面板关闭。
+		scan, err := observePublishScan(page)
+		if err != nil {
+			return nil, nil, err
+		}
+		if scan != nil {
+			if err := waitNoteVerification(page); err != nil {
+				return nil, nil, err
+			}
+			deadline = time.Now().Add(12 * time.Second)
+			continue
+		}
+		panels, err := newNoteActionPanels(page, existing)
+		if err != nil {
+			return nil, nil, err
+		}
+		var candidates rod.Elements
+		for _, panel := range panels {
+			text, err := panel.Text()
+			if err != nil {
+				return nil, nil, err
+			}
+			if strings.Contains(text, "删除") {
+				if err := closeNoteActionPanel(panel); err != nil {
+					return nil, nil, fmt.Errorf("出现删除确认，取消失败，停止操作: %w", err)
+				}
+				return nil, nil, fmt.Errorf("出现删除确认，已取消并停止操作")
 			}
 			options, err := panel.Elements(permissionOptions)
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
-			count := 0
+			values := map[string]bool{}
 			for _, option := range options {
+				visible, err := option.Visible()
+				if err != nil {
+					return nil, nil, err
+				}
+				if !visible {
+					continue
+				}
 				text, err := option.Text()
 				if err != nil {
-					return nil, err
+					return nil, nil, err
 				}
-				if visibilityLabel(text) != "" {
-					count++
+				if value := visibilityLabel(text); value != "" {
+					values[value] = true
 				}
 			}
-			if count >= 2 {
-				node, err := panel.Describe(0, false)
-				if err != nil {
-					return nil, err
-				}
-				if !existing[node.BackendNodeID] {
-					candidates = append(candidates, panel)
-				}
+			if len(values) >= 2 && (!icon || len(values) == 3) {
+				candidates = append(candidates, panel)
 			}
 		}
 		if len(candidates) > 1 {
-			return nil, fmt.Errorf("出现多个权限面板，无法确认目标笔记，拒绝修改")
+			return nil, nil, fmt.Errorf("出现多个权限面板，无法确认目标笔记，拒绝修改")
 		}
 		if len(candidates) == 1 {
-			return candidates[0].Context(page.GetContext()), nil
+			return candidates[0], nil, nil
 		}
-		if err := waitCreatorPoll(pp.GetContext()); err != nil {
-			return nil, fmt.Errorf("未找到笔记权限面板: %w", err)
+		if time.Now().After(deadline) {
+			return nil, panels, nil
+		}
+		if err := waitCreatorPoll(page.GetContext()); err != nil {
+			return nil, nil, err
 		}
 	}
+}
+
+// 仅使用明确的取消、关闭按钮或 Escape，不点击保存、确认等操作。
+func closeNoteActionPanel(panel *rod.Element) error {
+	buttons, err := panel.Elements(`button, [role="button"], .d-button, [aria-label="关闭"], [title="关闭"], .d-modal-close, .d-dialog-close, .el-dialog__headerbtn`)
+	if err != nil {
+		return err
+	}
+	clicked := false
+	for _, button := range buttons {
+		visible, err := button.Visible()
+		if err != nil {
+			return err
+		}
+		if !visible {
+			continue
+		}
+		text, err := button.Text()
+		if err != nil {
+			return err
+		}
+		close, err := button.Matches(`[aria-label="关闭"], [title="关闭"], .d-modal-close, .d-dialog-close, .el-dialog__headerbtn`)
+		if err != nil {
+			return err
+		}
+		if text = strings.TrimSpace(text); text != "取消" && text != "关闭" && !(text == "" && close) {
+			continue
+		}
+		if err := button.Click(proto.InputMouseButtonLeft, 1); err != nil {
+			return err
+		}
+		clicked = true
+		break
+	}
+	if !clicked {
+		if err := panel.Page().Keyboard.Type(input.Escape); err != nil {
+			return err
+		}
+	}
+	bounded := panel.Timeout(2 * time.Second)
+	defer bounded.CancelTimeout()
+	if err := bounded.WaitInvisible(); err != nil {
+		return fmt.Errorf("无法确认错误面板已关闭，停止尝试权限入口: %w", err)
+	}
+	return nil
 }
 
 func managedNoteID(card *rod.Element) (string, error) {
@@ -628,22 +771,22 @@ func permissionEntry(elements rod.Elements) (*rod.Element, error) {
 	return result, nil
 }
 
-func notePermissionTrigger(page *rod.Page, card *rod.Element) (*rod.Element, error) {
+func notePermissionTriggers(page *rod.Page, card *rod.Element) (triggers rod.Elements, icons bool, err error) {
 	menus := `[role="menu"], .d-dropdown-menu, .dropdown-menu, .d-popover, .d-popover-content`
 	existing := map[proto.DOMBackendNodeID]bool{}
 	visibleMenus, err := page.Elements(menus)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	for _, menu := range visibleMenus {
 		visible, err := menu.Visible()
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		if visible {
 			node, err := menu.Describe(0, false)
 			if err != nil {
-				return nil, err
+				return nil, false, err
 			}
 			existing[node.BackendNodeID] = true
 		}
@@ -653,95 +796,95 @@ func notePermissionTrigger(page *rod.Page, card *rod.Element) (*rod.Element, err
 	for time.Now().Before(deadline) {
 		entries, err := card.Elements(`button, [role="button"], div, span, a`)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		entry, err := permissionEntry(entries)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		if entry != nil {
-			return entry, nil
+			return rod.Elements{entry}, false, nil
 		}
 		controls, err := card.Elements(".permission, .permission-setting, .permission-text")
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		for _, control := range controls {
 			text, err := control.Text()
 			if err != nil {
-				return nil, err
+				return nil, false, err
 			}
 			visible, err := control.Visible()
 			if err != nil {
-				return nil, err
+				return nil, false, err
 			}
 			if visible && visibilityLabel(text) != "" {
-				return control, nil
+				return rod.Elements{control}, false, nil
 			}
 		}
 		if opened {
 			candidates, err := page.Elements(menus)
 			if err != nil {
-				return nil, err
+				return nil, false, err
 			}
 			for _, menu := range candidates {
 				node, err := menu.Describe(0, false)
 				if err != nil {
-					return nil, err
+					return nil, false, err
 				}
 				if existing[node.BackendNodeID] {
 					continue
 				}
 				entries, err := menu.Elements(`button, [role="menuitem"], div, span, a, li`)
 				if err != nil {
-					return nil, err
+					return nil, false, err
 				}
 				found, err := permissionEntry(entries)
 				if err != nil {
-					return nil, err
+					return nil, false, err
 				}
 				if found != nil {
 					if entry != nil {
 						a, err := entry.Describe(0, false)
 						if err != nil {
-							return nil, err
+							return nil, false, err
 						}
 						b, err := found.Describe(0, false)
 						if err != nil {
-							return nil, err
+							return nil, false, err
 						}
 						if a.BackendNodeID != b.BackendNodeID {
-							return nil, fmt.Errorf("出现多个权限菜单，拒绝修改")
+							return nil, false, fmt.Errorf("出现多个权限菜单，拒绝修改")
 						}
 					}
 					entry = found
 				}
 			}
 			if entry != nil {
-				return entry, nil
+				return rod.Elements{entry}, false, nil
 			}
 		} else {
 			more, err := card.Elements(`button, [role="button"], [aria-haspopup="menu"], .more, .more-button, .more-icon, .note-card__more`)
 			if err != nil {
-				return nil, err
+				return nil, false, err
 			}
 			for _, el := range more {
 				visible, err := el.Visible()
 				if err != nil {
-					return nil, err
+					return nil, false, err
 				}
 				if !visible {
 					continue
 				}
 				text, err := el.Text()
 				if err != nil {
-					return nil, err
+					return nil, false, err
 				}
 				labels := []string{text}
 				for _, attr := range []string{"aria-label", "title", "class", "aria-haspopup"} {
 					value, err := el.Attribute(attr)
 					if err != nil {
-						return nil, err
+						return nil, false, err
 					}
 					if value != nil {
 						labels = append(labels, *value)
@@ -761,17 +904,44 @@ func notePermissionTrigger(page *rod.Page, card *rod.Element) (*rod.Element, err
 					}
 				}
 				if allowed {
+					deleted, err := el.Matches(`.note-card__action-btn--del, .note-card__action-btn--del *`)
+					if err != nil {
+						return nil, false, err
+					}
+					if deleted {
+						continue
+					}
 					if err := el.Click(proto.InputMouseButtonLeft, 1); err != nil {
-						return nil, err
+						return nil, false, err
 					}
 					opened = true
 					break
 				}
 			}
 		}
+		if !opened {
+			// 操作条按页面顺序排列，优先尝试第一个可见的非删除图标。
+			icons, err := card.Elements(`.note-card__actions .note-card__action-btn:not(.note-card__action-btn--del)`)
+			if err != nil {
+				return nil, false, err
+			}
+			var visibleIcons rod.Elements
+			for _, icon := range icons {
+				visible, err := icon.Visible()
+				if err != nil {
+					return nil, false, err
+				}
+				if visible {
+					visibleIcons = append(visibleIcons, icon)
+				}
+			}
+			if len(visibleIcons) > 0 {
+				return visibleIcons, true, nil
+			}
+		}
 		if err := waitCreatorPoll(page.GetContext()); err != nil {
-			return nil, err
+			return nil, false, err
 		}
 	}
-	return nil, fmt.Errorf("目标笔记 hover 后仍没有可识别的权限设置入口，请核对管理页选择器")
+	return nil, false, fmt.Errorf("目标笔记 hover 后仍没有可识别的权限设置入口，请核对管理页选择器")
 }
