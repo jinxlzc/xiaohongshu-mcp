@@ -88,6 +88,10 @@ https://github.com/user-attachments/assets/bd9a9a4a-58cb-4421-b8f3-015f703ce1f9
 
 发布未确认成功时，会在进程 cwd 下的 `diag/` 保存截图和脱敏现场，不会在诊断中写入 cookie/token。
 
+发布后若出现「扫码验证」，会立即将弹窗内二维码写到进程 cwd 的 `verify_qr.png` 和 `verify_qr.json`（0600，可覆盖）；JSON 仅记录 RFC3339 写入时间 `written_at`、失效时间 `expires_at`。账号本人须用已登录的小红书 App 扫码，过期时程序只点击明确的刷新控件并更新文件，不关闭弹窗、不改稿或代做声明。超时或无法刷新会返回「需要账号本人扫码验证」并保留 `diag/` 现场；出现二维码不代表发布成功。
+
+图文/视频的 MCP（`publish_content` / `publish_with_video`）及 REST（`/api/v1/publish` / `/api/v1/publish_video`）共用 **12 分钟发布上限**，包含首次出现验证起最多 **5 分钟扫码等待**，验证消失后继续最多 15 秒成功确认；调用方及反向代理的请求/读取超时请设为至少 13 分钟，主动取消仍会终止发布。服务端 HTTP/MCP 没有更短的写入/工具超时，登录会话仍为 4 分钟，默认监听仍为 `127.0.0.1:18060`。
+
 **图片支持方式：**
 
 支持两种图片输入方式：

@@ -241,7 +241,7 @@ func registerTools(server *mcp.Server, appServer *AppServer) {
 	mcp.AddTool(server,
 		&mcp.Tool{
 			Name:        "publish_content",
-			Description: "发布小红书图文内容",
+			Description: "发布小红书图文内容（发布上限12分钟，安全扫码验证最多等待5分钟）",
 			InputSchema: publishContentSchema,
 			Annotations: &mcp.ToolAnnotations{
 				Title:           "Publish Content",
@@ -419,7 +419,7 @@ func registerTools(server *mcp.Server, appServer *AppServer) {
 	mcp.AddTool(server,
 		&mcp.Tool{
 			Name:        "publish_with_video",
-			Description: "发布小红书视频内容（仅支持本地单个视频文件）",
+			Description: "发布小红书视频内容（仅支持本地单个视频文件；发布上限12分钟，安全扫码验证最多等待5分钟）",
 			Annotations: &mcp.ToolAnnotations{
 				Title:           "Publish Video",
 				DestructiveHint: boolPtr(true),
