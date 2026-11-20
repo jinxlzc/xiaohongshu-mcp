@@ -13,7 +13,7 @@ import (
 	"github.com/go-rod/rod/lib/proto"
 )
 
-const publishDialogs = creatorDialogs + `, [aria-modal="true"], .ant-modal-content`
+const publishDialogs = creatorDialogs + `, [aria-modal="true"], .ant-modal-content, .verify-modal, .verify-dialog, .captcha-modal, .captcha-dialog`
 const publishHints = `[role="alert"], [role="status"], .d-toast, .d-message, .toast, .el-message, .ant-message, .error-message, .error-msg, .length-error, .max_suffix, .validation-message, [aria-invalid="true"], [class*="error"], [class*="invalid"]`
 
 type publishButtonState struct {
@@ -38,6 +38,7 @@ type publishObservation struct {
 	Prompts     []string             `json:"visible_prompts"`
 	SeenPrompts []string             `json:"observed_prompts"`
 	Dialogs     []publishDialog      `json:"dialogs"`
+	Scan        *publishScan         `json:"scan_verification,omitempty"`
 	FormPresent bool                 `json:"form_present"`
 	ReadErrors  []string             `json:"read_errors,omitempty"`
 }
@@ -59,7 +60,7 @@ func isPublishSuccessURL(raw string) bool {
 var publishAIWord = regexp.MustCompile(`(?i)\bai\b`)
 
 func needsPublishOwner(text string) bool {
-	if publishAIWord.MatchString(text) {
+	if isPublishScanText(text) || publishAIWord.MatchString(text) {
 		return true
 	}
 	lower := strings.ToLower(text)
@@ -124,11 +125,14 @@ func appendPublishPrompts(dst []string, values ...string) []string {
 
 // 观察与点击分开，离线测试可断言所有决策和点击次数。
 func monitorPublish(ctx context.Context, timeout time.Duration, observe func(context.Context) publishObservation) (publishObservation, error) {
-	ctx, cancel := context.WithTimeout(ctx, timeout)
+	ctx, cancel := context.WithTimeout(ctx, 2*timeout+publishScanTimeout)
 	defer cancel()
 	var last publishObservation
 	var seen []string
 	confirmed := false
+	deadline := time.Now().Add(timeout)
+	var scanWait publishScanWait
+	scanning := false
 	for {
 		current := observe(ctx)
 		if current.URL != "" {
@@ -141,41 +145,65 @@ func monitorPublish(ctx context.Context, timeout time.Duration, observe func(con
 			seen = appendPublishPrompts(seen, dialog.Text)
 		}
 		last.SeenPrompts = seen
-		for _, prompt := range current.Prompts {
-			if needsPublishOwner(prompt) {
-				return last, fmt.Errorf("需要账号本人处理：%s", redactPublishText(prompt))
+		if current.Scan != nil {
+			scanning = true
+			seen = appendPublishPrompts(seen, current.Scan.Text)
+			last.SeenPrompts = seen
+			if err := scanWait.update(ctx, current.Scan); err != nil {
+				return last, err
 			}
-		}
-		for _, prompt := range current.Prompts {
-			for _, word := range []string{"失败", "错误", "超限", "超过", "不能为空", "未通过", "不支持", "不允许", "违规"} {
-				if strings.Contains(prompt, word) {
-					return last, fmt.Errorf("发布被页面拦截：%s", redactPublishText(prompt))
+		} else if scanning && (len(current.ReadErrors) > 0 || current.URL == "") {
+			// 读取失败不能证明验证弹窗已消失，也不能丢掉本人扫码提示。
+			if time.Since(scanWait.started) >= publishScanTimeout {
+				return last, fmt.Errorf("需要账号本人扫码验证：等待超过5分钟")
+			}
+		} else {
+			if scanning {
+				deadline = time.Now().Add(timeout)
+				scanning = false
+			}
+			for _, prompt := range current.Prompts {
+				if needsPublishOwner(prompt) {
+					return last, fmt.Errorf("需要账号本人处理：%s", redactPublishText(prompt))
 				}
 			}
-		}
-		if len(current.Dialogs) > 1 {
-			return last, fmt.Errorf("需要账号本人处理：同时出现多个发布弹窗")
-		}
-		for _, dialog := range current.Dialogs {
-			index, safe := safePublishConfirmation(dialog)
-			if !safe {
-				return last, fmt.Errorf("需要账号本人处理：%s", redactPublishText(dialog.Text))
-			}
-			if !confirmed && len(current.ReadErrors) == 0 {
-				if dialog.confirm == nil {
-					return last, fmt.Errorf("发布确认按钮不可用")
+			for _, prompt := range current.Prompts {
+				for _, word := range []string{"失败", "错误", "超限", "超过", "不能为空", "未通过", "不支持", "不允许", "违规"} {
+					if strings.Contains(prompt, word) {
+						return last, fmt.Errorf("发布被页面拦截：%s", redactPublishText(prompt))
+					}
 				}
-				if err := dialog.confirm(ctx, index); err != nil {
-					return last, fmt.Errorf("点击二次发布确认失败: %w", err)
-				}
-				confirmed = true
 			}
-		}
-		if len(current.ReadErrors) == 0 && len(current.Dialogs) == 0 && !current.FormPresent && isPublishSuccessURL(current.URL) {
-			return last, nil
+			if len(current.Dialogs) > 1 {
+				return last, fmt.Errorf("需要账号本人处理：同时出现多个发布弹窗")
+			}
+			for _, dialog := range current.Dialogs {
+				index, safe := safePublishConfirmation(dialog)
+				if !safe {
+					return last, fmt.Errorf("需要账号本人处理：%s", redactPublishText(dialog.Text))
+				}
+				if !confirmed && len(current.ReadErrors) == 0 {
+					if dialog.confirm == nil {
+						return last, fmt.Errorf("发布确认按钮不可用")
+					}
+					if err := dialog.confirm(ctx, index); err != nil {
+						return last, fmt.Errorf("点击二次发布确认失败: %w", err)
+					}
+					confirmed = true
+				}
+			}
+			if len(current.ReadErrors) == 0 && len(current.Dialogs) == 0 && !current.FormPresent && isPublishSuccessURL(current.URL) {
+				return last, nil
+			}
+			if !time.Now().Before(deadline) {
+				return last, fmt.Errorf("发布未确认成功：未观察到发布表单退出并进入成功落地页")
+			}
 		}
 		select {
 		case <-ctx.Done():
+			if scanning {
+				return last, fmt.Errorf("需要账号本人扫码验证: %w", ctx.Err())
+			}
 			return last, fmt.Errorf("发布未确认成功：未观察到发布表单退出并进入成功落地页: %w", ctx.Err())
 		case <-time.After(300 * time.Millisecond):
 		}
@@ -269,6 +297,13 @@ func observePublish(page *rod.Page) publishObservation {
 		for _, text := range red.Value.Arr() {
 			out.Prompts = appendPublishPrompts(out.Prompts, text.Str())
 		}
+	}
+	out.Scan, err = observePublishScan(page)
+	record(err)
+	if out.Scan != nil {
+		out.Dialogs = []publishDialog{{Text: out.Scan.Text}}
+		out.FormPresent = true
+		return out
 	}
 	dialogs, err := page.Elements(publishDialogs)
 	record(err)

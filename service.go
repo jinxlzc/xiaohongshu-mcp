@@ -239,6 +239,8 @@ func (s *XiaohongshuService) getLoginQrcode(ctx context.Context, creator bool) (
 
 // PublishContent 发布内容
 func (s *XiaohongshuService) PublishContent(ctx context.Context, req *PublishRequest) (*PublishResponse, error) {
+	ctx, cancel := context.WithTimeout(ctx, xiaohongshu.PublishTimeout)
+	defer cancel()
 	// 验证标题长度（小红书限制：最大20个字）
 	if xhsutil.CalcTitleLength(req.Title) > 20 {
 		return nil, fmt.Errorf("标题长度超过限制")
@@ -316,7 +318,7 @@ func (s *XiaohongshuService) publishContent(ctx context.Context, content xiaohon
 	page := b.NewPage()
 	defer page.Close()
 
-	action, err := xiaohongshu.NewPublishImageAction(page)
+	action, err := xiaohongshu.NewPublishImageAction(page.Context(ctx))
 	if err != nil {
 		return err
 	}
@@ -326,6 +328,8 @@ func (s *XiaohongshuService) publishContent(ctx context.Context, content xiaohon
 
 // PublishVideo 发布视频（本地文件）
 func (s *XiaohongshuService) PublishVideo(ctx context.Context, req *PublishVideoRequest) (*PublishVideoResponse, error) {
+	ctx, cancel := context.WithTimeout(ctx, xiaohongshu.PublishTimeout)
+	defer cancel()
 	// 标题长度校验（小红书限制：最大20个字）
 	if xhsutil.CalcTitleLength(req.Title) > 20 {
 		return nil, fmt.Errorf("标题长度超过限制")
@@ -396,7 +400,7 @@ func (s *XiaohongshuService) publishVideo(ctx context.Context, content xiaohongs
 	page := b.NewPage()
 	defer page.Close()
 
-	action, err := xiaohongshu.NewPublishVideoAction(page)
+	action, err := xiaohongshu.NewPublishVideoAction(page.Context(ctx))
 	if err != nil {
 		return err
 	}

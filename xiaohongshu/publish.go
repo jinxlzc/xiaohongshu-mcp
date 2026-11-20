@@ -75,7 +75,7 @@ const mentionNodeQuery = `a.tiptap-at, a[data-user], a[data-at], a[data-user-id]
 
 func NewPublishImageAction(page *rod.Page) (*PublishAction, error) {
 
-	pp := page.Timeout(300 * time.Second)
+	pp := page.Timeout(PublishTimeout)
 
 	if err := ensureCreatorSession(pp); err != nil {
 		return nil, err
@@ -112,8 +112,8 @@ func (p *PublishAction) Publish(ctx context.Context, content PublishImageContent
 		return errors.New("图片不能为空")
 	}
 
-	// 重设超时：.Context(ctx) 会替换掉 NewPublishImageAction 里 Timeout(300s) 的 deadline
-	page := p.page.Context(ctx).Timeout(300 * time.Second)
+	// 重设超时：.Context(ctx) 会替换掉 NewPublishImageAction 里的发布 deadline
+	page := p.page.Context(ctx).Timeout(PublishTimeout)
 
 	if err := uploadImages(page, content.ImagePaths); err != nil {
 		return errors.Wrap(err, "小红书上传图片失败")

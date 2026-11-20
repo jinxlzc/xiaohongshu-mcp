@@ -26,7 +26,7 @@ type PublishVideoContent struct {
 
 // NewPublishVideoAction 进入发布页并切换到"上传视频"
 func NewPublishVideoAction(page *rod.Page) (*PublishAction, error) {
-	pp := page.Timeout(300 * time.Second)
+	pp := page.Timeout(PublishTimeout)
 
 	if err := ensureCreatorSession(pp); err != nil {
 		return nil, err
@@ -62,8 +62,8 @@ func (p *PublishAction) PublishVideo(ctx context.Context, content PublishVideoCo
 		return errors.New("视频不能为空")
 	}
 
-	// 重设超时：.Context(ctx) 会替换掉 NewPublishVideoAction 里 Timeout(300s) 的 deadline
-	page := p.page.Context(ctx).Timeout(300 * time.Second)
+	// 重设超时：.Context(ctx) 会替换掉 NewPublishVideoAction 里的发布 deadline
+	page := p.page.Context(ctx).Timeout(PublishTimeout)
 
 	if err := uploadVideo(page, content.VideoPath); err != nil {
 		return errors.Wrap(err, "小红书上传视频失败")

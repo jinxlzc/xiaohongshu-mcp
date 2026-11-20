@@ -3,7 +3,10 @@
 package xiaohongshu
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"fmt"
 	"image/png"
 	"os"
 	"path/filepath"
@@ -152,4 +155,151 @@ func TestPublishButtonStateLocal(t *testing.T) {
 			require.NotEmpty(t, reason)
 		})
 	}
+}
+
+func TestPublishScanVerifyDetectionLocal(t *testing.T) {
+	page := publishResultFixture(t, func(string) string {
+		return `<div class="d-input"><input value="原稿"></div><section style="background:#222;color:white;width:400px;padding:24px"><h3>扫码验证</h3><p>为保护账号安全，请使用已登录该账号的「<span>小红书APP</span>」扫码验证身份</p><img width="72" height="72"><p>酱森酱</p><canvas width="200" height="200"></canvas><p>二维码1分钟失效</p><button>问题反馈</button><button>×</button></section>`
+	})
+	state := observePublish(page)
+	require.NotEmpty(t, state.Dialogs, "可见的扫码弹窗不能漏检")
+	if len(state.Dialogs) > 0 {
+		require.Contains(t, state.Dialogs[0].Text, "扫码验证")
+		_, safe := safePublishConfirmation(state.Dialogs[0])
+		require.False(t, safe)
+	}
+}
+
+// 仅绘制本地测试图案，不使用现场二维码或真实凭证。
+const scanVerifyFixture = `<style>section{background:#222;color:white;width:400px;padding:24px}canvas{display:block;background:white}#refresh{display:none}</style>
+<div class="d-input"><input value="原稿"></div><div contenteditable="true">正文</div><button onclick="document.body.dataset.bad='publish'">发布</button>
+<section id="scan"><h3>扫码验证</h3><p>为保护账号安全，请使用已登录该账号的「<span style="color:red">小红书APP</span>」扫码验证身份</p><img width="72" height="72"><p>酱森酱</p><canvas width="200" height="200"></canvas><p id="expiry">二维码1分钟失效</p><span id="refresh" onclick="refreshQR()">刷新二维码</span><button onclick="document.body.dataset.bad='feedback'">问题反馈</button><button onclick="document.body.dataset.bad='close'">×</button><button onclick="document.body.dataset.bad='cancel'">取消</button><button onclick="document.body.dataset.bad='unlink'">取消关联</button></section>
+<script>
+let version=0;
+function paint(){const ctx=document.querySelector('canvas').getContext('2d');ctx.fillStyle='white';ctx.fillRect(0,0,200,200);ctx.fillStyle='black';for(let y=0;y<10;y++)for(let x=0;x<10;x++)if((x+y+version)%3)ctx.fillRect(x*20,y*20,15,15)}
+function refreshQR(){version++;document.body.dataset.refresh=String(version);paint();document.querySelector('#expiry').textContent='二维码1分钟失效';document.querySelector('#refresh').style.display='none'}
+paint();
+</script>`
+
+func TestPublishScanVerifyFilesRefreshLocal(t *testing.T) {
+	t.Chdir(t.TempDir())
+	page := publishResultFixture(t, func(string) string { return scanVerifyFixture })
+	state := observePublish(page)
+	require.Empty(t, state.ReadErrors)
+	require.NotNil(t, state.Scan)
+	wait := publishScanWait{}
+	require.NoError(t, wait.update(page.GetContext(), state.Scan))
+	read := func() (publishQRMetadata, []byte) {
+		raw, err := os.ReadFile("verify_qr.json")
+		require.NoError(t, err)
+		require.NotContains(t, string(raw), "token")
+		require.NotContains(t, string(raw), "酱森酱")
+		var meta publishQRMetadata
+		require.NoError(t, json.Unmarshal(raw, &meta))
+		require.Equal(t, time.Minute, meta.ExpiresAt.Sub(meta.WrittenAt))
+		data, err := os.ReadFile("verify_qr.png")
+		require.NoError(t, err)
+		config, err := png.DecodeConfig(bytes.NewReader(data))
+		require.NoError(t, err)
+		require.Equal(t, 200, config.Width)
+		require.Equal(t, 200, config.Height)
+		return meta, data
+	}
+	first, png1 := read()
+	page.MustEval(`() => {document.querySelector('#expiry').textContent='二维码已过期';document.querySelector('#refresh').style.display='block'}`)
+	wait.expires = time.Now().Add(-time.Second)
+	state = observePublish(page)
+	require.NoError(t, wait.update(page.GetContext(), state.Scan))
+	require.Equal(t, "1", page.MustEval(`() => document.body.dataset.refresh`).Str())
+	require.NoError(t, wait.update(page.GetContext(), observePublish(page).Scan))
+	second, png2 := read()
+	require.True(t, second.WrittenAt.After(first.WrittenAt))
+	require.NotEqual(t, png1, png2)
+	require.Empty(t, page.MustEval(`() => document.body.dataset.bad || ''`).Str())
+	require.Equal(t, "原稿", page.MustElement("input").MustProperty("value").Str())
+}
+
+func TestPublishScanVerifyTextVariantsLocal(t *testing.T) {
+	for _, text := range []string{"扫码验证", "扫码验证身份", "二维码1分钟失效", "请使用小红书APP扫码"} {
+		t.Run(text, func(t *testing.T) {
+			page := publishResultFixture(t, func(string) string {
+				return `<section><h3>` + text + `</h3><canvas width="200" height="200"></canvas></section>`
+			})
+			require.NotNil(t, observePublish(page).Scan)
+		})
+	}
+	t.Run("隐藏弹窗与原稿不触发验证", func(t *testing.T) {
+		page := publishResultFixture(t, func(string) string {
+			return `<section style="display:none"><h3>扫码验证</h3><canvas width="200" height="200"></canvas></section><div contenteditable="true"><p>请使用小红书APP扫码验证身份</p><img width="200" height="200"></div>`
+		})
+		require.Nil(t, observePublish(page).Scan)
+	})
+}
+
+func TestPublishScanVerifyFailureDiagnosticLocal(t *testing.T) {
+	t.Chdir(t.TempDir())
+	page := publishResultFixture(t, func(string) string { return scanVerifyFixture })
+	page.MustEval(`() => document.querySelector('#expiry').textContent='二维码已过期'`)
+	err := waitPublishSuccess(page, time.Second)
+	require.ErrorContains(t, err, "需要账号本人扫码验证")
+	require.FileExists(t, "verify_qr.png")
+	files, e := filepath.Glob("diag/*/metadata.json")
+	require.NoError(t, e)
+	require.Len(t, files, 1)
+	raw, e := os.ReadFile(files[0])
+	require.NoError(t, e)
+	require.Contains(t, string(raw), "扫码验证")
+	require.Contains(t, string(raw), "scan_verification")
+	require.Empty(t, page.MustEval(`() => document.body.dataset.bad || ''`).Str())
+}
+
+func TestPublishScanVerifySiblingRefreshLocal(t *testing.T) {
+	t.Chdir(t.TempDir())
+	page := publishResultFixture(t, func(string) string {
+		return `<section><div><p>二维码1分钟失效</p><canvas width="200" height="200"></canvas></div><button onclick="document.body.dataset.refreshed='true'">刷新二维码</button><button onclick="document.body.dataset.bad='true'">取消</button></section>`
+	})
+	state := observePublish(page)
+	require.NotNil(t, state.Scan)
+	require.True(t, state.Scan.RefreshAvailable)
+	require.NoError(t, state.Scan.refresh(page.GetContext()))
+	require.Equal(t, "true", page.MustEval(`() => document.body.dataset.refreshed`).Str())
+	require.Empty(t, page.MustEval(`() => document.body.dataset.bad || ''`).Str())
+}
+
+func TestPublishScanVerifyRefreshRedrawLocal(t *testing.T) {
+	for _, placeholder := range []bool{false, true} {
+		t.Run(fmt.Sprint(placeholder), func(t *testing.T) {
+			t.Chdir(t.TempDir())
+			page := publishResultFixture(t, func(string) string { return scanVerifyFixture })
+			page.MustEval(`placeholder => {
+   document.querySelector('#expiry').textContent='二维码已过期';
+   const refresh=document.querySelector('#refresh');refresh.style.display='block';
+   refresh.onclick=()=>{document.body.dataset.refresh='1';document.querySelector('canvas').style.display='none';refresh.style.display='none'};
+   if(placeholder)document.querySelector('canvas').style.display='none';
+  }`, placeholder)
+			wait := publishScanWait{}
+			require.NoError(t, wait.update(page.GetContext(), observePublish(page).Scan))
+			require.Equal(t, "1", page.MustEval(`() => document.body.dataset.refresh`).Str())
+			missing := observePublish(page)
+			require.NotNil(t, missing.Scan)
+			require.Nil(t, missing.Scan.capture)
+			require.NoError(t, wait.update(page.GetContext(), missing.Scan))
+			page.MustEval(`() => {version++;paint();document.querySelector('canvas').style.display='block';document.querySelector('#expiry').textContent='二维码1分钟失效'}`)
+			require.NoError(t, wait.update(page.GetContext(), observePublish(page).Scan))
+			require.FileExists(t, "verify_qr.png")
+			require.FileExists(t, "verify_qr.json")
+			require.Empty(t, page.MustEval(`() => document.body.dataset.bad || ''`).Str())
+		})
+	}
+}
+
+func TestPublishScanVerifyRejectsUnsafeRefreshAncestorLocal(t *testing.T) {
+	page := publishResultFixture(t, func(string) string {
+		return `<section><p>扫码验证</p><canvas width="200" height="200"></canvas><button onclick="document.body.dataset.bad='true'">问题反馈<span>刷新</span></button></section>`
+	})
+	state := observePublish(page)
+	require.NotNil(t, state.Scan)
+	require.False(t, state.Scan.RefreshAvailable)
+	require.Error(t, state.Scan.refresh(page.GetContext()))
+	require.Empty(t, page.MustEval(`() => document.body.dataset.bad || ''`).Str())
 }
