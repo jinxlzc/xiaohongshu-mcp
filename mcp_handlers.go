@@ -196,7 +196,8 @@ func (s *AppServer) handlePublishContent(ctx context.Context, args map[string]in
 		}
 	}
 
-	resultText := fmt.Sprintf("内容发布成功: %+v", result)
+	encoded, _ := json.Marshal(result)
+	resultText := "内容发布成功: " + string(encoded)
 	return &MCPToolResult{
 		Content: []MCPContent{{
 			Type: "text",
@@ -267,7 +268,8 @@ func (s *AppServer) handlePublishVideo(ctx context.Context, args map[string]inte
 		}
 	}
 
-	resultText := fmt.Sprintf("视频发布成功: %+v", result)
+	encoded, _ := json.Marshal(result)
+	resultText := "视频发布成功: " + string(encoded)
 	return &MCPToolResult{
 		Content: []MCPContent{{
 			Type: "text",

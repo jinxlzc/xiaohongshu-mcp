@@ -2,6 +2,7 @@ package xiaohongshu
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/url"
@@ -31,6 +32,8 @@ type publishDialog struct {
 }
 
 type publishObservation struct {
+	retry       func(context.Context) error
+	NoteID      string               `json:"note_id,omitempty"`
 	URL         string               `json:"url"`
 	Title       string               `json:"title"`
 	ButtonFound bool                 `json:"button_found"`
@@ -125,7 +128,7 @@ func appendPublishPrompts(dst []string, values ...string) []string {
 
 // 观察与点击分开，离线测试可断言所有决策和点击次数。
 func monitorPublish(ctx context.Context, timeout time.Duration, observe func(context.Context) publishObservation) (publishObservation, error) {
-	ctx, cancel := context.WithTimeout(ctx, 2*timeout+publishScanTimeout)
+	ctx, cancel := context.WithTimeout(ctx, 3*max(timeout, publishConfirmTimeout)+2*publishScanTimeout)
 	defer cancel()
 	var last publishObservation
 	var seen []string
@@ -133,6 +136,8 @@ func monitorPublish(ctx context.Context, timeout time.Duration, observe func(con
 	deadline := time.Now().Add(timeout)
 	var scanWait publishScanWait
 	scanning := false
+	verified, retried := false, false
+	var stableSince time.Time
 	for {
 		current := observe(ctx)
 		if current.URL != "" {
@@ -146,6 +151,10 @@ func monitorPublish(ctx context.Context, timeout time.Duration, observe func(con
 		}
 		last.SeenPrompts = seen
 		if current.Scan != nil {
+			stableSince = time.Time{}
+			if !scanning {
+				scanWait = publishScanWait{}
+			}
 			scanning = true
 			seen = appendPublishPrompts(seen, current.Scan.Text)
 			last.SeenPrompts = seen
@@ -159,10 +168,18 @@ func monitorPublish(ctx context.Context, timeout time.Duration, observe func(con
 			}
 		} else {
 			if scanning {
-				deadline = time.Now().Add(timeout)
+				deadline = time.Now().Add(max(timeout, publishConfirmTimeout))
+				verified = true
 				scanning = false
 			}
 			for _, prompt := range current.Prompts {
+				if publishVerificationPassed(prompt) {
+					if !verified {
+						deadline = time.Now().Add(max(timeout, publishConfirmTimeout))
+					}
+					verified = true
+					continue
+				}
 				if needsPublishOwner(prompt) {
 					return last, fmt.Errorf("需要账号本人处理：%s", redactPublishText(prompt))
 				}
@@ -195,6 +212,22 @@ func monitorPublish(ctx context.Context, timeout time.Duration, observe func(con
 			if len(current.ReadErrors) == 0 && len(current.Dialogs) == 0 && !current.FormPresent && isPublishSuccessURL(current.URL) {
 				return last, nil
 			}
+			if verified && !retried && current.retry != nil && len(current.ReadErrors) == 0 && len(current.Dialogs) == 0 && current.FormPresent && isPublishEditorURL(current.URL) {
+				if stableSince.IsZero() {
+					stableSince = time.Now()
+				}
+				if time.Since(stableSince) >= 2*time.Second {
+					// 点击结果即使不明也消耗唯一补点机会。
+					retried = true
+					if err := current.retry(ctx); err != nil {
+						seen = appendPublishPrompts(seen, fmt.Sprintf("发布补点反馈未确认: %v", err))
+					}
+					confirmed = false
+					deadline = time.Now().Add(max(timeout, publishConfirmTimeout))
+				}
+			} else {
+				stableSince = time.Time{}
+			}
 			if !time.Now().Before(deadline) {
 				return last, fmt.Errorf("发布未确认成功：未观察到发布表单退出并进入成功落地页")
 			}
@@ -210,16 +243,36 @@ func monitorPublish(ctx context.Context, timeout time.Duration, observe func(con
 	}
 }
 
+// 保留无稿件信息的诊断入口，生产路径使用 waitPublishResult。
 func waitPublishSuccess(page *rod.Page, timeout time.Duration) error {
-	started := time.Now()
+	_, err := waitPublishResult(page, timeout, publishAttempt{Started: time.Now()})
+	return err
+}
+
+func waitPublishResult(page *rod.Page, timeout time.Duration, attempt publishAttempt) (*PublishResult, error) {
 	last, err := monitorPublish(page.GetContext(), timeout, func(ctx context.Context) publishObservation {
-		return observePublish(page.Context(ctx))
+		p := page.Context(ctx)
+		state := observePublish(p)
+		if attempt.Title != "" && retryPublishReady(p, state, attempt) {
+			state.retry = func(ctx context.Context) error { return retryPublish(p.Context(ctx), attempt) }
+		}
+		return state
 	})
+	// 查重用独立页，保留编辑页诊断；不启动创作者登录流程。
+	if attempt.Title != "" && page.GetContext().Err() == nil && (err != nil || last.NoteID == "") {
+		id, lookupErr := lookupPublishedNote(page, attempt)
+		if lookupErr == nil && id != "" {
+			return &PublishResult{NoteID: id}, nil
+		}
+		if err != nil && lookupErr != nil {
+			err = errors.Join(err, fmt.Errorf("笔记管理回读未确认: %w", lookupErr))
+		}
+	}
 	if err != nil {
-		return publishFailureDiagnostic(page, started, last, err)
+		return nil, publishFailureDiagnostic(page, attempt.Started, last, err)
 	}
 	slog.Info("发布已确认成功", "url", last.URL)
-	return nil
+	return &PublishResult{NoteID: last.NoteID}, nil
 }
 
 func publishElementDisabled(elem *rod.Element) (bool, error) {
@@ -248,6 +301,9 @@ func observePublish(page *rod.Page) publishObservation {
 		record(err)
 	} else {
 		out.URL = redactPublishURL(info.URL)
+		if isPublishSuccessURL(info.URL) {
+			out.NoteID = publishURLNoteID(info.URL)
+		}
 		out.Title = redactPublishText(info.Title)
 	}
 	buttons, err := page.Elements(`xhs-publish-btn, .publish-page-publish-btn button.bg-red`)
