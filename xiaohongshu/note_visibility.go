@@ -436,13 +436,23 @@ func findManagedNote(page *rod.Page, feedID string) (_ *rod.Element, err error) 
 	previous, paged := "", ""
 	stableSince := time.Now()
 	for {
-		cards, err := pp.Elements(noteCards)
+		allCards, err := pp.Elements(noteCards)
 		if err != nil {
 			return nil, err
 		}
+		cards := rod.Elements{}
 		ids := []string{}
 		unknown := 0
-		for _, card := range cards {
+		for _, card := range allCards {
+			// Visible 不要求在视口内，但排除非激活列表中的隐藏副本。
+			visible, err := card.Visible()
+			if err != nil {
+				return nil, err
+			}
+			if !visible {
+				continue
+			}
+			cards = append(cards, card)
 			id, err := managedNoteID(card)
 			if err != nil {
 				return nil, err

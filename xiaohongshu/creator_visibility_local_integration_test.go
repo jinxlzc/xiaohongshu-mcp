@@ -195,7 +195,7 @@ func TestNotePermissionAmbiguousLocal(t *testing.T) {
 func TestManagedNotePaginationLocal(t *testing.T) {
 	const id = "0123456789abcdef01234567"
 	page := creatorFixture(t, func(string) string {
-		return `<div class="note-item" data-note-id="ffffffffffffffffffffffff"></div><button aria-label="下一页" onclick="document.querySelector('.note-item').dataset.noteId='` + id + `';this.disabled=true">下一页</button>`
+		return `<div class="note-item" data-note-id="ffffffffffffffffffffffff">测试笔记</div><button aria-label="下一页" onclick="document.querySelector('.note-item').dataset.noteId='` + id + `';this.disabled=true">下一页</button>`
 	})
 	require.NoError(t, page.Navigate(urlOfNoteManager))
 	require.NoError(t, page.WaitLoad())

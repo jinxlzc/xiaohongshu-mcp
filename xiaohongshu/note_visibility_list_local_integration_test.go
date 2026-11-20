@@ -198,3 +198,18 @@ func TestNoteVisibilityIgnoresCardScanTextLocal(t *testing.T) {
 	require.NoFileExists(t, "verify_qr.png")
 	require.NoFileExists(t, "verify_qr.json")
 }
+
+func TestManagedNoteHiddenDuplicateLocal(t *testing.T) {
+	page := creatorFixture(t, func(string) string {
+		return `<!doctype html><div style="display:none"><div class="note-card" data-note-id="` + fixtureNoteID + `">隐藏副本</div></div>
+<div style="height:1400px"></div><div class="note-card" data-copy="active" data-impression='{"noteTarget":{"value":{"noteId":"` + fixtureNoteID + `"}}}'>屏外的可见副本</div>`
+	})
+	require.NoError(t, page.Navigate(urlOfNoteManager))
+	require.NoError(t, page.WaitLoad())
+	require.True(t, page.MustEval(`() => document.querySelector('[data-copy]').getBoundingClientRect().top > window.innerHeight`).Bool())
+	card, err := findManagedNote(page, fixtureNoteID)
+	require.NoError(t, err)
+	require.Equal(t, "active", *card.MustAttribute("data-copy"))
+	require.NoError(t, card.ScrollIntoView())
+	require.NoError(t, card.Hover())
+}
