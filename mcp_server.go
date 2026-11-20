@@ -140,6 +140,7 @@ func InitMCPServer(appServer *AppServer) *mcp.Server {
 
 	// 注册所有工具
 	registerTools(server, appServer)
+	registerNoteVisibilityTools(server, appServer)
 
 	logrus.Info("MCP Server initialized with official SDK")
 

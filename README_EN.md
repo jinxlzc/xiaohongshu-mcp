@@ -530,6 +530,12 @@ Use search functionality to search RedNote content by keywords:
 
 ![Search Content](./assets/search_result.png)
 
+### Change a published note's visibility
+
+Use MCP `set_note_visibility` or HTTP `POST /api/v1/feeds/visibility` with one `feed_id` and `visibility`: `公开可见` (public), `仅自己可见` (private), or `仅互关好友可见` (mutual followers). `xsec_token` is optional and unused on the manager page. Only the current account's notes are supported; the existing creator session flow is reused.
+
+The result includes `feed_id`, `before`, `after`, and `status`. An unchanged note returns `skipped`; a change returns `updated` only after reloading and verifying the saved state. Missing notes, ambiguous permission panels, and failed readback return errors. Available visibility options depend on the account and page.
+
 ## 2. MCP Client Integration
 
 This service supports the standard Model Context Protocol (MCP) and can integrate with various AI clients that support MCP.

@@ -496,6 +496,12 @@ go run . -token=your-secret-token
 }
 ```
 
+### 修改已发布笔记可见范围
+
+使用 MCP `set_note_visibility` 或 HTTP `POST /api/v1/feeds/visibility`，传入单篇笔记的 `feed_id` 和 `visibility`（`公开可见`、`仅自己可见`、`仅互关好友可见`）。`xsec_token` 可省略，管理页路径不使用它。仅支持当前账号的笔记，调用上游已有的创作者会话进入逻辑。
+
+响应包含 `feed_id`、`before`、`after` 和 `status`：已是目标范围时为 `skipped`，保存后重新加载确认成功才返回 `updated`。找不到目标笔记、权限面板有歧义或回读不符均报错，不修改其他笔记。互关好友范围是否可用取决于账号及页面提供的选项。
+
 ## 1.4. 验证 MCP
 
 ```bash
